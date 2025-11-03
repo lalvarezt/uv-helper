@@ -108,6 +108,7 @@ uv-helper install <git-url> --script <script.py> [--script <more.py> ...] [OPTIO
 - `--force`: Force overwrite without confirmation
 - `--no-symlink`: Skip creating symlinks
 - `--install-dir PATH`: Custom installation directory
+- `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 
 **Examples:**
 
@@ -184,6 +185,7 @@ uv-helper update <script-name> [OPTIONS]
 **Options:**
 
 - `--force`: Force reinstall even if up-to-date
+- `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 
 **Examples:**
 
@@ -203,6 +205,7 @@ uv-helper update-all [OPTIONS]
 **Options:**
 
 - `--force`: Force reinstall all scripts
+- `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 
 **Examples:**
 
@@ -240,6 +243,9 @@ verify_after_install = true
 
 # Make scripts executable
 auto_chmod = true
+
+# Use --exact flag in shebang for precise dependency management
+use_exact_flag = true
 ```
 
 ### Custom Configuration
@@ -271,19 +277,21 @@ UV-Helper automates the following workflow:
 2. **Checkout Ref**: Checks out the specified branch, tag, or commit
 3. **Resolve Dependencies**: Parses requirements from `--with` flag or auto-detects `requirements.txt`
 4. **Process Script**: Runs `uv add --script` to add dependency metadata
-5. **Modify Shebang**: Replaces shebang with `#!/usr/bin/env -S uv run --script`
+5. **Modify Shebang**: Replaces shebang with `#!/usr/bin/env -S uv run --exact --script`
 6. **Create Symlink**: Creates symlink in `~/.local/bin` (or custom bin directory)
 7. **Track State**: Saves installation info to state file
 
 ### Shebang Transformation
 
-UV-Helper modifies script shebangs to use uv's script runner:
+UV-Helper modifies script shebangs to use uv's script runner with the `--exact` flag:
 
 ```python
-#!/usr/bin/env -S uv run --script
+#!/usr/bin/env -S uv run --exact --script
 ```
 
-This ensures scripts run with proper dependency isolation using uv.
+The `--exact` flag ensures that the script's auto-managed virtual environment precisely matches the dependencies specified in the script's inline metadata. When you remove dependencies from a script, the virtual environment will be automatically cleaned up on the next run.
+
+This behavior can be controlled via the `use_exact_flag` configuration option or the `--exact/--no-exact` CLI flags.
 
 ## Development
 

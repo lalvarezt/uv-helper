@@ -27,6 +27,7 @@ class Config(BaseModel):
     auto_symlink: bool = True
     verify_after_install: bool = True
     auto_chmod: bool = True
+    use_exact_flag: bool = True
 
     @field_validator("repo_dir", "install_dir", "state_file", mode="before")
     @classmethod
@@ -59,6 +60,7 @@ class Config(BaseModel):
                 "auto_symlink": self.auto_symlink,
                 "verify_after_install": self.verify_after_install,
                 "auto_chmod": self.auto_chmod,
+                "use_exact_flag": self.use_exact_flag,
             },
         }
 
@@ -131,6 +133,7 @@ def load_config(config_path: Path | None = None) -> Config:
             "auto_symlink": data.get("install", {}).get("auto_symlink", True),
             "verify_after_install": data.get("install", {}).get("verify_after_install", True),
             "auto_chmod": data.get("install", {}).get("auto_chmod", True),
+            "use_exact_flag": data.get("install", {}).get("use_exact_flag", True),
         }
 
         return Config.model_validate(flat_data)

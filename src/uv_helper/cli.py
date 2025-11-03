@@ -87,6 +87,11 @@ def cli(ctx: click.Context, config: Path | None) -> None:
     help="Custom installation directory (overrides config)",
 )
 @click.option("-v", "--verbose", is_flag=True, help="Show dependency resolution details")
+@click.option(
+    "--exact/--no-exact",
+    default=None,
+    help="Use --exact flag in shebang for precise dependency management (default: from config)",
+)
 @click.pass_context
 def install(
     ctx: click.Context,
@@ -97,6 +102,7 @@ def install(
     no_symlink: bool,
     install_dir: Path | None,
     verbose: bool,
+    exact: bool | None,
 ) -> None:
     """
     Install Python scripts from a Git repository.
@@ -229,6 +235,7 @@ def install(
                     auto_chmod=config.auto_chmod,
                     auto_symlink=not no_symlink and config.auto_symlink,
                     verify_after_install=config.verify_after_install,
+                    use_exact=exact if exact is not None else config.use_exact_flag,
                 )
 
                 progress.update(task, completed=True)
@@ -374,8 +381,13 @@ def remove(
 @cli.command()
 @click.argument("script-name")
 @click.option("--force", "-f", is_flag=True, help="Force reinstall even if up-to-date")
+@click.option(
+    "--exact/--no-exact",
+    default=None,
+    help="Use --exact flag in shebang for precise dependency management (default: from config)",
+)
 @click.pass_context
-def update(ctx: click.Context, script_name: str, force: bool) -> None:
+def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None) -> None:
     """
     Update an installed script to the latest version from its repository.
 
@@ -450,6 +462,7 @@ def update(ctx: click.Context, script_name: str, force: bool) -> None:
             auto_chmod=config.auto_chmod,
             auto_symlink=config.auto_symlink,
             verify_after_install=config.verify_after_install,
+            use_exact=exact if exact is not None else config.use_exact_flag,
         )
 
         # Update state with new commit hash and actual branch
@@ -470,8 +483,13 @@ def update(ctx: click.Context, script_name: str, force: bool) -> None:
 
 @cli.command("update-all")
 @click.option("--force", "-f", is_flag=True, help="Force reinstall all scripts")
+@click.option(
+    "--exact/--no-exact",
+    default=None,
+    help="Use --exact flag in shebang for precise dependency management (default: from config)",
+)
 @click.pass_context
-def update_all(ctx: click.Context, force: bool) -> None:
+def update_all(ctx: click.Context, force: bool, exact: bool | None) -> None:
     """
     Update all installed scripts to their latest versions.
 
@@ -537,6 +555,7 @@ def update_all(ctx: click.Context, force: bool) -> None:
                 auto_chmod=config.auto_chmod,
                 auto_symlink=config.auto_symlink,
                 verify_after_install=config.verify_after_install,
+                use_exact=exact if exact is not None else config.use_exact_flag,
             )
 
             # Update state with new commit hash and actual branch

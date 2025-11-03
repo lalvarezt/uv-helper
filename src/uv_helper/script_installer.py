@@ -54,17 +54,19 @@ def process_script_dependencies(script_path: Path, dependencies: list[str]) -> b
         raise ScriptInstallerError(f"Failed to add dependencies to script: {e.stderr}") from e
 
 
-def modify_shebang(script_path: Path) -> bool:
+def modify_shebang(script_path: Path, use_exact: bool = True) -> bool:
     """
     Modify script shebang to use uv run --script.
 
     Transforms:
         #!/usr/bin/env python3
     To:
-        #!/usr/bin/env -S uv run --script
+        #!/usr/bin/env -S uv run --exact --script (if use_exact=True)
+        #!/usr/bin/env -S uv run --script (if use_exact=False)
 
     Args:
         script_path: Path to Python script
+        use_exact: Whether to include --exact flag for precise dependency management
 
     Returns:
         True if successful
@@ -79,13 +81,19 @@ def modify_shebang(script_path: Path) -> bool:
         if not lines:
             raise ScriptInstallerError("Script file is empty")
 
+        # Build shebang based on use_exact flag
+        if use_exact:
+            shebang = "#!/usr/bin/env -S uv run --exact --script\n"
+        else:
+            shebang = "#!/usr/bin/env -S uv run --script\n"
+
         # Check if first line is a shebang
         if lines[0].startswith("#!"):
             # Replace with uv shebang
-            lines[0] = "#!/usr/bin/env -S uv run --script\n"
+            lines[0] = shebang
         else:
             # Add shebang at the beginning
-            lines.insert(0, "#!/usr/bin/env -S uv run --script\n")
+            lines.insert(0, shebang)
 
         # Write back
         with open(script_path, "w", encoding="utf-8") as f:
@@ -254,6 +262,7 @@ def install_script(
     auto_chmod: bool = True,
     auto_symlink: bool = True,
     verify_after_install: bool = True,
+    use_exact: bool = True,
 ) -> Path | None:
     """
     Install a script with all processing steps.
@@ -273,6 +282,7 @@ def install_script(
         auto_chmod: Whether to make script executable
         auto_symlink: Whether to create symlink
         verify_after_install: Whether to verify after installation
+        use_exact: Whether to use --exact flag in shebang for precise dependency management
 
     Returns:
         Path to symlink if created, None otherwise
@@ -289,7 +299,7 @@ def install_script(
         process_script_dependencies(script_path, dependencies)
 
     # Modify shebang
-    modify_shebang(script_path)
+    modify_shebang(script_path, use_exact=use_exact)
 
     # Make executable
     if auto_chmod:

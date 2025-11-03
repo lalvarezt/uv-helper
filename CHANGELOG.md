@@ -5,6 +5,28 @@ All notable changes to UV-Helper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-11-03
+
+### Added
+
+- **Local directory installation support**: Install scripts from local filesystem directories, not just Git repositories
+- `--copy-parent-dir` flag: Copy entire parent directory instead of just the script file
+- `--add-source-package` flag: Add source directory as a local package dependency with automatic path management
+- Database migration system: Automatic schema migrations on version upgrades
+- Support for both Git and local sources in all commands
+
+### Fixed
+
+- `--with` flag now appends to existing `requirements.txt` instead of replacing it
+- Improved Python script validation using `ast.parse()` instead of naive first-line checking
+- Script validation now accepts any valid Python syntax (docstrings, comments, etc.)
+
+### Changed
+
+- Updated README with local directory installation examples and usage
+- Enhanced `install` command help text with local source examples
+- Added code comments explaining metadata table usage in migrations
+
 ## [1.1.0] - 2025-11-03
 
 ### Added

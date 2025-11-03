@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from tinydb import Query, TinyDB
 
+from .migrations import MigrationRunner
 from .utils import ensure_dir
 
 
@@ -42,6 +43,8 @@ class StateManager:
         """
         Initialize state manager with TinyDB.
 
+        Automatically runs any pending database migrations.
+
         Args:
             state_file: Path to state file
         """
@@ -50,6 +53,11 @@ class StateManager:
 
         self.db = TinyDB(state_file)
         self.scripts = self.db.table("scripts")
+
+        # Run any pending migrations
+        runner = MigrationRunner(self.db)
+        if runner.needs_migration():
+            runner.run_migrations()
 
     def add_script(self, script: ScriptInfo) -> None:
         """Add or update script in database."""

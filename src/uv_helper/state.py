@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from tinydb import Query, TinyDB
@@ -14,18 +15,24 @@ class ScriptInfo(BaseModel):
 
     Pydantic model that automatically handles serialization/deserialization,
     validation, and type coercion for script metadata.
+
+    Supports both Git and local sources via the source_type field.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
-    source_url: str
-    ref: str
+    source_type: Literal["git", "local"]
     installed_at: datetime
     repo_path: Path
     symlink_path: Path | None = None
     dependencies: list[str] = Field(default_factory=list)
-    commit_hash: str
+    # Git-specific fields (required when source_type="git")
+    source_url: str | None = None
+    ref: str | None = None
+    commit_hash: str | None = None
+    # Local-specific field (original source path for updates)
+    source_path: Path | None = None
 
 
 class StateManager:

@@ -46,6 +46,7 @@ def parse_dependencies_string(deps_str: str) -> list[str]:
 def resolve_dependencies(
     with_arg: str | None,
     repo_path: Path,
+    fallback_path: Path | None = None,
 ) -> list[str]:
     """
     Resolve dependencies based on --with argument and auto-detection.
@@ -58,39 +59,57 @@ def resolve_dependencies(
 
     Args:
         with_arg: Value from --with flag
-        repo_path: Path to repository
+        repo_path: Path to repository (primary search location)
+        fallback_path: Optional secondary path to search (e.g., original source directory)
 
     Returns:
         List of dependency strings
     """
+    search_roots: list[Path] = [repo_path]
+    if fallback_path and fallback_path not in search_roots:
+        search_roots.append(fallback_path)
+
     # Case 1: Explicit --with flag
     if with_arg:
         # Check if it's a file path
         if with_arg.endswith(".txt") or "/" in with_arg or "\\" in with_arg:
-            req_path = repo_path / with_arg
+            last_error: FileNotFoundError | None = None
+            for root in search_roots:
+                req_path = root / with_arg
+                try:
+                    return parse_requirements_file(req_path)
+                except FileNotFoundError as exc:
+                    last_error = exc
+
+            # Try as absolute path last
             try:
-                return parse_requirements_file(req_path)
-            except FileNotFoundError:
-                # Try as absolute path
-                req_path = Path(with_arg)
-                return parse_requirements_file(req_path)
+                return parse_requirements_file(Path(with_arg))
+            except FileNotFoundError as exc:
+                last_error = exc
+
+            if last_error:
+                raise last_error
+            raise FileNotFoundError(f"Requirements file not found: {with_arg}")
         else:
             # Treat as comma-separated list - append to auto-detected requirements
             dependencies = []
 
             # First, auto-detect requirements.txt in repo root
-            auto_requirements = repo_path / "requirements.txt"
-            if auto_requirements.exists():
-                dependencies.extend(parse_requirements_file(auto_requirements))
+            for root in search_roots:
+                auto_requirements = root / "requirements.txt"
+                if auto_requirements.exists():
+                    dependencies.extend(parse_requirements_file(auto_requirements))
+                    break
 
             # Then append additional dependencies from --with
             dependencies.extend(parse_dependencies_string(with_arg))
             return dependencies
 
     # Case 2: Auto-detect requirements.txt in repo root
-    auto_requirements = repo_path / "requirements.txt"
-    if auto_requirements.exists():
-        return parse_requirements_file(auto_requirements)
+    for root in search_roots:
+        auto_requirements = root / "requirements.txt"
+        if auto_requirements.exists():
+            return parse_requirements_file(auto_requirements)
 
     # Case 3: No dependencies
     return []

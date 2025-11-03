@@ -64,9 +64,8 @@ def cli(ctx: click.Context, config: Path | None) -> None:
 
     # Verify required tools
     try:
-        verify_git_available()
         verify_uv_available()
-    except (GitError, ScriptInstallerError) as e:
+    except ScriptInstallerError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
@@ -215,6 +214,12 @@ def install(
         repo_path = config.repo_dir / repo_name
         source_path = None
 
+        try:
+            verify_git_available()
+        except GitError as e:
+            console.print(f"[red]Error:[/red] Git: {e}")
+            sys.exit(1)
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -304,8 +309,9 @@ def install(
             # Files will be copied during the script installation loop
 
     # Resolve dependencies
+    dependency_fallback = source_path if is_local else None
     try:
-        dependencies = resolve_dependencies(with_deps, repo_path)
+        dependencies = resolve_dependencies(with_deps, repo_path, dependency_fallback)
         if verbose and dependencies:
             console.print(f"Dependencies: {', '.join(dependencies)}")
     except (FileNotFoundError, OSError) as e:
@@ -334,6 +340,7 @@ def install(
 
             # Copy to repo_path
             dest_script = repo_path / script_name
+            dest_script.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_script, dest_script)
             script_path = dest_script
         else:
@@ -509,7 +516,11 @@ def remove(
     # Confirm removal
     if not force:
         console.print(f"Removing script: [cyan]{script_name}[/cyan]")
-        console.print(f"  Source: {script_info.source_url}")
+        if script_info.source_type == "git":
+            source_display = script_info.source_url or "N/A"
+        else:
+            source_display = str(script_info.source_path) if script_info.source_path else "local"
+        console.print(f"  Source: {source_display}")
         console.print(f"  Symlink: {script_info.symlink_path}")
         if clean_repo:
             console.print(f"  Repository: {script_info.repo_path} (will be removed)")
@@ -594,6 +605,7 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
                     # Script is directly in source_path, copy just the script
                     source_script = script_info.source_path / script_name
                     dest_script = script_info.repo_path / script_name
+                    dest_script.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(source_script, dest_script)
                 else:
                     # Copy entire directory contents
@@ -639,6 +651,12 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
     # At this point, source_type must be "git", so these fields are not None
     assert script_info.source_url is not None  # Type narrowing for type checker
     assert script_info.ref is not None  # Type narrowing for type checker
+
+    try:
+        verify_git_available()
+    except GitError as e:
+        console.print(f"[red]Error:[/red] Git: {e}")
+        sys.exit(1)
 
     try:
         with Progress(
@@ -742,6 +760,7 @@ def update_all(ctx: click.Context, force: bool, exact: bool | None) -> None:
     console.print(f"Updating {len(scripts)} script(s)...")
 
     results = []
+    git_checked = False
     for script_info in scripts:
         # Skip local scripts (they need manual source updates)
         if script_info.source_type == "local":
@@ -751,6 +770,14 @@ def update_all(ctx: click.Context, force: bool, exact: bool | None) -> None:
         # At this point, source_type must be "git"
         assert script_info.source_url is not None  # Type narrowing for type checker
         assert script_info.ref is not None  # Type narrowing for type checker
+
+        if not git_checked:
+            try:
+                verify_git_available()
+            except GitError as e:
+                console.print(f"[red]Error:[/red] Git: {e}")
+                sys.exit(1)
+            git_checked = True
 
         try:
             # Update repository

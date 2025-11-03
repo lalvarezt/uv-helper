@@ -66,13 +66,17 @@ uv pip install -e .
 
 - Python 3.11 or higher
 - [uv](https://github.com/astral-sh/uv) installed and in PATH
-- [git](https://git-scm.com/) installed and in PATH
+- [git](https://git-scm.com/) installed and in PATH when working with Git sources (local-only
+  operations do not require git)
 
 ## Quick Start
 
 ```bash
 # Basic installation
 uv-helper install https://github.com/user/repo --script script.py
+
+# Install from a local directory (no git required)
+uv-helper install ./tools --script app.py
 
 # Install with dependencies
 uv-helper install https://github.com/user/repo --script script.py --with requests,click
@@ -177,6 +181,9 @@ uv-helper remove <script-name> [OPTIONS]
 - `--clean-repo`: Remove cloned repository if no other scripts use it
 - `--force`: Skip confirmation prompt
 
+During removal the CLI reports the original source: Git installs show the repository URL, while
+local installs show the stored source directory.
+
 **Examples:**
 
 ```bash
@@ -220,6 +227,9 @@ uv-helper update-all [OPTIONS]
 
 - `--force`: Force reinstall all scripts
 - `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
+
+Local installations are skipped automatically (reported as `skipped (local)`) because UV-Helper
+needs access to the original source directory to refresh them.
 
 **Examples:**
 

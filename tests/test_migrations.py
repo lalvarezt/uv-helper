@@ -6,7 +6,9 @@ from tinydb import TinyDB
 
 from uv_helper.migrations import (
     CURRENT_SCHEMA_VERSION,
+    MIGRATIONS,
     Migration001AddSourceType,
+    Migration002AddCopyParentDir,
     MigrationRunner,
 )
 from uv_helper.state import StateManager
@@ -82,6 +84,86 @@ class TestMigration001AddSourceType:
 
         # Run migration on empty database
         migration = Migration001AddSourceType()
+        migration.migrate(db)
+
+        # Should not raise any errors
+        scripts_table = db.table("scripts")
+        assert len(scripts_table.all()) == 0
+
+        db.close()
+
+
+class TestMigration002AddCopyParentDir:
+    """Tests for Migration002AddCopyParentDir."""
+
+    def test_adds_copy_parent_dir_to_existing_scripts(self, tmp_path: Path) -> None:
+        """Test that migration adds copy_parent_dir to scripts without it."""
+        # Create database with script missing copy_parent_dir
+        db_path = tmp_path / "test.json"
+        db = TinyDB(db_path)
+        scripts_table = db.table("scripts")
+
+        # Insert scripts without copy_parent_dir (old format)
+        scripts_table.insert(
+            {
+                "name": "script1.py",
+                "source_type": "local",
+                "source_path": "/path/to/script1",
+            }
+        )
+        scripts_table.insert(
+            {
+                "name": "script2.py",
+                "source_type": "git",
+                "source_url": "https://github.com/user/repo",
+            }
+        )
+
+        # Run migration
+        migration = Migration002AddCopyParentDir()
+        migration.migrate(db)
+
+        # Verify copy_parent_dir was added with default False
+        all_scripts = scripts_table.all()
+        assert len(all_scripts) == 2
+        assert all(script.get("copy_parent_dir") is False for script in all_scripts)
+
+        db.close()
+
+    def test_preserves_existing_copy_parent_dir(self, tmp_path: Path) -> None:
+        """Test that migration preserves existing copy_parent_dir."""
+        # Create database with script that already has copy_parent_dir
+        db_path = tmp_path / "test.json"
+        db = TinyDB(db_path)
+        scripts_table = db.table("scripts")
+
+        # Insert script with copy_parent_dir already set
+        scripts_table.insert(
+            {
+                "name": "script.py",
+                "source_type": "local",
+                "source_path": "/path/to/package",
+                "copy_parent_dir": True,
+            }
+        )
+
+        # Run migration
+        migration = Migration002AddCopyParentDir()
+        migration.migrate(db)
+
+        # Verify copy_parent_dir was not changed
+        script = scripts_table.get(doc_id=1)
+        assert script["copy_parent_dir"] is True  # type: ignore[index]
+
+        db.close()
+
+    def test_empty_database(self, tmp_path: Path) -> None:
+        """Test migration on empty database."""
+        db_path = tmp_path / "test.json"
+        db = TinyDB(db_path)
+
+        # Run migration on empty database
+        migration = Migration002AddCopyParentDir()
         migration.migrate(db)
 
         # Should not raise any errors
@@ -167,11 +249,12 @@ class TestMigrationRunner:
 
         # Run all migrations
         runner = MigrationRunner(db)
-        runner.run_migrations()
+        runner.run_migrations(MIGRATIONS)
 
         # Verify migration was applied
         script = scripts_table.get(doc_id=1)
         assert script["source_type"] == "git"  # type: ignore[index]
+        assert script["copy_parent_dir"] is False  # type: ignore[index]
 
         # Verify schema version was updated
         assert runner.get_schema_version() == CURRENT_SCHEMA_VERSION
@@ -187,7 +270,7 @@ class TestMigrationRunner:
         runner.set_schema_version(CURRENT_SCHEMA_VERSION)
 
         # Should not run any migrations
-        runner.run_migrations()
+        runner.run_migrations(MIGRATIONS)
 
         # Version should still be current
         assert runner.get_schema_version() == CURRENT_SCHEMA_VERSION
@@ -223,10 +306,11 @@ class TestStateManagerMigration:
         # Initialize StateManager (should trigger migrations)
         state_manager = StateManager(state_file)
 
-        # Verify migration was applied
+        # Verify migrations were applied
         script = state_manager.get_script("old_script.py")
         assert script is not None
         assert script.source_type == "git"
+        assert script.copy_parent_dir is False
 
     def test_state_manager_migrations_idempotent(self, tmp_path: Path) -> None:
         """Test that running StateManager init multiple times doesn't re-run migrations."""

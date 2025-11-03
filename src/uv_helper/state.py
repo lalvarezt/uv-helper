@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from tinydb import Query, TinyDB
 
-from .migrations import MigrationRunner
+from .migrations import MIGRATIONS, MigrationRunner
 from .utils import ensure_dir
 
 
@@ -32,8 +32,9 @@ class ScriptInfo(BaseModel):
     source_url: str | None = None
     ref: str | None = None
     commit_hash: str | None = None
-    # Local-specific field (original source path for updates)
-    source_path: Path | None = None
+    # Local-specific fields
+    source_path: Path | None = None  # Original source path for updates
+    copy_parent_dir: bool = False  # Whether entire parent directory was copied
 
 
 class StateManager:
@@ -57,7 +58,7 @@ class StateManager:
         # Run any pending migrations
         runner = MigrationRunner(self.db)
         if runner.needs_migration():
-            runner.run_migrations()
+            runner.run_migrations(MIGRATIONS)
 
     def add_script(self, script: ScriptInfo) -> None:
         """Add or update script in database."""

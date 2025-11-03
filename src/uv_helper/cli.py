@@ -406,6 +406,7 @@ def install(
                     symlink_path=symlink_path,
                     dependencies=dependencies,
                     source_path=source_path,
+                    copy_parent_dir=copy_parent_dir,
                 )
             state_manager.add_script(script_info)
 
@@ -600,15 +601,9 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
                 task = progress.add_task("Updating from source...", total=None)
 
                 # Re-copy from source directory
-                # Determine if we need to copy the whole directory or just the script
-                if (script_info.source_path / script_name).exists():
-                    # Script is directly in source_path, copy just the script
-                    source_script = script_info.source_path / script_name
-                    dest_script = script_info.repo_path / script_name
-                    dest_script.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_script, dest_script)
-                else:
-                    # Copy entire directory contents
+                # Use the stored copy_parent_dir value to match original install behavior
+                if script_info.copy_parent_dir:
+                    # Copy entire directory contents (--copy-parent-dir was used)
                     for item in script_info.source_path.iterdir():
                         dest = script_info.repo_path / item.name
                         if item.is_dir():
@@ -617,6 +612,12 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
                             shutil.copytree(item, dest)
                         else:
                             shutil.copy2(item, dest)
+                else:
+                    # Copy just the script file (individual script install)
+                    source_script = script_info.source_path / script_name
+                    dest_script = script_info.repo_path / script_name
+                    dest_script.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_script, dest_script)
 
                 progress.update(task, completed=True)
 

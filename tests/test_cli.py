@@ -278,3 +278,130 @@ def test_cli_update_nonexistent_script(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code != 0
     assert "not found" in result.output.lower()
+
+
+def test_cli_local_update_without_copy_parent_dir(tmp_path: Path, monkeypatch) -> None:
+    """Test updating a local script installed without --copy-parent-dir."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    monkeypatch.setenv("UV_HELPER_CONFIG", str(config_path))
+    monkeypatch.setattr("uv_helper.cli.verify_uv_available", lambda: True)
+    monkeypatch.setattr("uv_helper.cli.verify_git_available", lambda: None)
+    monkeypatch.setattr("uv_helper.script_installer.process_script_dependencies", lambda p, d: True)
+    monkeypatch.setattr("uv_helper.script_installer.verify_script", lambda _: True)
+
+    # Create source directory with a script
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    script_path = source_dir / "tool.py"
+    script_path.write_text("print('version 1')\n", encoding="utf-8")
+    helper_file = source_dir / "helper.txt"
+    helper_file.write_text("helper v1\n", encoding="utf-8")
+
+    # Install without --copy-parent-dir (individual script mode)
+    install_result = runner.invoke(cli, ["install", str(source_dir), "--script", "tool.py"])
+    assert install_result.exit_code == 0, install_result.output
+
+    # Verify copy_parent_dir is False
+    state_manager = StateManager(state_file)
+    script_info = state_manager.get_script("tool.py")
+    assert script_info is not None
+    assert script_info.copy_parent_dir is False
+
+    # Modify the script in source
+    script_path.write_text("print('version 2')\n", encoding="utf-8")
+    helper_file.write_text("helper v2\n", encoding="utf-8")
+
+    # Update the script
+    update_result = runner.invoke(cli, ["update", "tool.py"])
+    assert update_result.exit_code == 0, update_result.output
+
+    # Verify only the script was updated, not helper.txt
+    repo_path = repo_dir / "tool"
+    staged_script = repo_path / "tool.py"
+    assert staged_script.exists()
+    script_content = staged_script.read_text(encoding="utf-8")
+    assert "version 2" in script_content
+
+    # Helper file should not be copied in individual script mode
+    staged_helper = repo_path / "helper.txt"
+    assert not staged_helper.exists(), "helper.txt should not exist in individual script mode"
+
+
+def test_cli_local_update_with_copy_parent_dir(tmp_path: Path, monkeypatch) -> None:
+    """Test updating a local script installed with --copy-parent-dir."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    monkeypatch.setenv("UV_HELPER_CONFIG", str(config_path))
+    monkeypatch.setattr("uv_helper.cli.verify_uv_available", lambda: True)
+    monkeypatch.setattr("uv_helper.cli.verify_git_available", lambda: None)
+    monkeypatch.setattr("uv_helper.script_installer.process_script_dependencies", lambda p, d: True)
+    monkeypatch.setattr("uv_helper.script_installer.verify_script", lambda _: True)
+
+    # Create source directory with a script and additional files
+    source_dir = tmp_path / "mypackage"
+    source_dir.mkdir()
+    script_path = source_dir / "cli.py"
+    script_path.write_text("print('version 1')\n", encoding="utf-8")
+    helper_file = source_dir / "helper.txt"
+    helper_file.write_text("helper v1\n", encoding="utf-8")
+    subdir = source_dir / "subdir"
+    subdir.mkdir()
+    (subdir / "data.txt").write_text("data v1\n", encoding="utf-8")
+
+    # Install with --copy-parent-dir (entire directory mode)
+    install_result = runner.invoke(
+        cli, ["install", str(source_dir), "--script", "cli.py", "--copy-parent-dir"]
+    )
+    assert install_result.exit_code == 0, install_result.output
+
+    # Verify copy_parent_dir is True
+    state_manager = StateManager(state_file)
+    script_info = state_manager.get_script("cli.py")
+    assert script_info is not None
+    assert script_info.copy_parent_dir is True
+
+    # Verify entire directory was copied initially
+    repo_path = repo_dir / "mypackage"
+    assert (repo_path / "cli.py").exists()
+    assert (repo_path / "helper.txt").exists()
+    assert (repo_path / "subdir" / "data.txt").exists()
+
+    # Modify files in source
+    script_path.write_text("print('version 2')\n", encoding="utf-8")
+    helper_file.write_text("helper v2\n", encoding="utf-8")
+    (subdir / "data.txt").write_text("data v2\n", encoding="utf-8")
+    new_file = source_dir / "newfile.txt"
+    new_file.write_text("new content\n", encoding="utf-8")
+
+    # Update the script
+    update_result = runner.invoke(cli, ["update", "cli.py"])
+    assert update_result.exit_code == 0, update_result.output
+
+    # Verify entire directory was refreshed, including all files
+    staged_script = repo_path / "cli.py"
+    assert "version 2" in staged_script.read_text(encoding="utf-8")
+
+    staged_helper = repo_path / "helper.txt"
+    assert staged_helper.exists(), "helper.txt should exist in copy-parent-dir mode"
+    assert "helper v2" in staged_helper.read_text(encoding="utf-8")
+
+    staged_data = repo_path / "subdir" / "data.txt"
+    assert staged_data.exists(), "subdir/data.txt should exist"
+    assert "data v2" in staged_data.read_text(encoding="utf-8")
+
+    staged_new = repo_path / "newfile.txt"
+    assert staged_new.exists(), "newfile.txt should be copied in update"
+    assert "new content" in staged_new.read_text(encoding="utf-8")

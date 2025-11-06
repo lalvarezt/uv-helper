@@ -57,7 +57,7 @@ uv tool install uv-helper
 ### From Source
 
 ```bash
-git clone https://github.com/user/uv-helper
+git clone https://github.com/lalvarezt/uv-helper
 cd uv-helper
 uv pip install -e .
 ```
@@ -298,10 +298,12 @@ uv-helper install ...
 UV-Helper automates the following workflow:
 
 **For Git sources:**
+
 1. **Clone Repository**: Clones the Git repository (or updates if already cloned)
 2. **Checkout Ref**: Checks out the specified branch, tag, or commit
 
 **For local sources:**
+
 1. **Copy Files**: Copies script files or entire directory to managed location
 
 **Common steps:**
@@ -331,7 +333,7 @@ This behavior can be controlled via the `use_exact_flag` configuration option or
 
 ```bash
 # Clone repository
-git clone https://github.com/user/uv-helper
+git clone https://github.com/lalvarezt/uv-helper
 cd uv-helper
 
 # Install with dev dependencies
@@ -352,7 +354,10 @@ uv run pytest -v
 
 ```bash
 # Run linter, fix imports, format files, and run type checks in one go
-uv run ruff check --select I --fix && uv run ruff format && uv run ty check
+uv run ruff check --fix --unsafe-fixes && uv run ruff check --select I --fix && uv run ruff format && uv run ty check
+
+# Run linter with Ruff
+uv run ruff check --fix --unsafe-fixes
 
 # Run linter, fix import ordering with Ruff
 uv run ruff check --select I --fix

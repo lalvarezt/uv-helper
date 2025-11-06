@@ -5,6 +5,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from uv_helper.cli import cli
+from uv_helper.constants import SourceType
 from uv_helper.state import StateManager
 
 
@@ -88,7 +89,7 @@ def test_cli_local_install_update_and_remove(tmp_path: Path, monkeypatch) -> Non
     state_manager = StateManager(state_file)
     script_info = state_manager.get_script(script_rel)
     assert script_info is not None
-    assert script_info.source_type == "local"
+    assert script_info.source_type == SourceType.LOCAL
     assert script_info.source_path == source_dir
     assert script_info.dependencies == ["requests"]
 
@@ -159,7 +160,7 @@ def test_cli_install_with_add_source_package(tmp_path: Path, monkeypatch) -> Non
     assert staged_script.exists()
     content = staged_script.read_text(encoding="utf-8")
     assert "# [tool.uv.sources]" in content
-    assert f"# mypackage = {{ path = " in content
+    assert "# mypackage = { path = " in content
 
     # Verify state includes the package in dependencies
     state_manager = StateManager(state_file)

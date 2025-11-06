@@ -1,8 +1,13 @@
 """Migration runner for database schema updates."""
 
+import shutil
+from datetime import datetime
+from pathlib import Path
+
 from rich.console import Console
 from tinydb import TinyDB
 
+from ..constants import DB_TABLE_METADATA, METADATA_KEY_SCHEMA_VERSION
 from .base import CURRENT_SCHEMA_VERSION, Migration
 
 console = Console()
@@ -22,7 +27,7 @@ class MigrationRunner:
         # Metadata table stores schema version as a single document with doc_id=1.
         # Using a fixed doc_id ensures we always retrieve/update the same document
         # instead of creating multiple version entries.
-        self.metadata = db.table("metadata")
+        self.metadata = db.table(DB_TABLE_METADATA)
 
     def get_schema_version(self) -> int:
         """
@@ -33,7 +38,7 @@ class MigrationRunner:
         """
         result = self.metadata.get(doc_id=1)
         if result and isinstance(result, dict):
-            return result.get("schema_version", 0)
+            return result.get(METADATA_KEY_SCHEMA_VERSION, 0)
         return 0
 
     def set_schema_version(self, version: int) -> None:
@@ -45,9 +50,9 @@ class MigrationRunner:
         """
         # Use update if doc exists, otherwise insert
         if self.metadata.get(doc_id=1):
-            self.metadata.update({"schema_version": version}, doc_ids=[1])
+            self.metadata.update({METADATA_KEY_SCHEMA_VERSION: version}, doc_ids=[1])
         else:
-            self.metadata.insert({"schema_version": version})
+            self.metadata.insert({METADATA_KEY_SCHEMA_VERSION: version})
 
     def needs_migration(self) -> bool:
         """
@@ -59,9 +64,35 @@ class MigrationRunner:
         current_version = self.get_schema_version()
         return current_version < CURRENT_SCHEMA_VERSION
 
+    def backup_database(self) -> Path | None:
+        """
+        Create a backup of the database file before migrations.
+
+        Returns:
+            Path to backup file, or None if backup failed
+        """
+        try:
+            # Get the database file path from TinyDB's storage
+            db_path = Path(self.db.storage._handle.name)  # ty: ignore[possibly-missing-attribute]
+
+            # Create backup filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = db_path.parent / f"{db_path.stem}_backup_{timestamp}{db_path.suffix}"
+
+            # Create backup
+            shutil.copy2(db_path, backup_path)
+            console.print(f"  Created backup: {backup_path}")
+            return backup_path
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] Failed to create backup: {e}")
+            return None
+
     def run_migrations(self, migrations: list[Migration]) -> None:
         """
-        Run all pending migrations.
+        Run all pending migrations with automatic backup.
+
+        Creates a backup of the database before applying migrations.
+        If a migration fails, the backup can be manually restored.
 
         Args:
             migrations: List of migrations to run
@@ -76,6 +107,9 @@ class MigrationRunner:
             f"Running database migrations (v{current_version} -> v{CURRENT_SCHEMA_VERSION})..."
         )
 
+        # Create backup before migrations
+        backup_path = self.backup_database()
+
         # Run each migration that hasn't been applied yet
         for migration in migrations:
             if migration.version > current_version:
@@ -87,10 +121,8 @@ class MigrationRunner:
                     self.set_schema_version(migration.version)
                 except Exception as e:
                     console.print(f"[red]Error:[/red] Migration {migration.version} failed: {e}")
-                    console.print(
-                        "[yellow]Hint:[/yellow] Consider backing up your state file "
-                        "before retrying."
-                    )
+                    if backup_path:
+                        console.print(f"[yellow]Hint:[/yellow] Restore backup from: {backup_path}")
                     raise
 
         console.print("Database migrations completed.")

@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from tinydb import Query, TinyDB
 
+from .constants import DB_TABLE_SCRIPTS, SOURCE_TYPE_GIT, SOURCE_TYPE_LOCAL
 from .migrations import MIGRATIONS, MigrationRunner
 from .utils import ensure_dir
 
@@ -23,7 +24,7 @@ class ScriptInfo(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
-    source_type: Literal["git", "local"]
+    source_type: Literal["git", "local"]  # Use SOURCE_TYPE_GIT or SOURCE_TYPE_LOCAL constants
     installed_at: datetime
     repo_path: Path
     symlink_path: Path | None = None
@@ -53,7 +54,7 @@ class StateManager:
         ensure_dir(state_file.parent)
 
         self.db = TinyDB(state_file)
-        self.scripts = self.db.table("scripts")
+        self.scripts = self.db.table(DB_TABLE_SCRIPTS)
 
         # Run any pending migrations
         runner = MigrationRunner(self.db)

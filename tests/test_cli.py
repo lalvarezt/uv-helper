@@ -159,7 +159,7 @@ def test_cli_install_with_add_source_package(tmp_path: Path, monkeypatch) -> Non
     assert staged_script.exists()
     content = staged_script.read_text(encoding="utf-8")
     assert "# [tool.uv.sources]" in content
-    assert f"# mypackage = {{ path = " in content
+    assert "# mypackage = { path = " in content
 
     # Verify state includes the package in dependencies
     state_manager = StateManager(state_file)

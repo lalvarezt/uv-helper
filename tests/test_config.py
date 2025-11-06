@@ -1,6 +1,6 @@
 """Tests for config module."""
 
-import os
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -250,7 +250,7 @@ clone_depth = 10
         config_file = tmp_path / "invalid.toml"
         config_file.write_text("this is not valid TOML [[[", encoding="utf-8")
 
-        with pytest.raises(Exception):  # tomllib.TOMLDecodeError
+        with pytest.raises(tomllib.TOMLDecodeError):
             load_config(config_file)
 
     def test_load_config_saves_default(self, tmp_path: Path) -> None:

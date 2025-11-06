@@ -3,6 +3,7 @@
 from rich.console import Console
 from tinydb import TinyDB
 
+from ..constants import DB_TABLE_SCRIPTS, SOURCE_TYPE_GIT
 from .base import Migration
 
 console = Console()
@@ -24,13 +25,13 @@ class Migration001AddSourceType(Migration):
 
     def migrate(self, db: TinyDB) -> None:
         """Add source_type field to all existing scripts."""
-        scripts_table = db.table("scripts")
+        scripts_table = db.table(DB_TABLE_SCRIPTS)
 
         # Update all scripts that don't have source_type
         updated_count = 0
         for doc in scripts_table.all():
             if "source_type" not in doc:
-                scripts_table.update({"source_type": "git"}, doc_ids=[doc.doc_id])
+                scripts_table.update({"source_type": SOURCE_TYPE_GIT}, doc_ids=[doc.doc_id])
                 updated_count += 1
 
         if updated_count > 0:

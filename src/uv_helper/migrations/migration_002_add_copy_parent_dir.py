@@ -3,6 +3,7 @@
 from rich.console import Console
 from tinydb import TinyDB
 
+from ..constants import DB_TABLE_SCRIPTS
 from .base import Migration
 
 console = Console()
@@ -24,7 +25,7 @@ class Migration002AddCopyParentDir(Migration):
 
     def migrate(self, db: TinyDB) -> None:
         """Add copy_parent_dir field to all existing scripts."""
-        scripts_table = db.table("scripts")
+        scripts_table = db.table(DB_TABLE_SCRIPTS)
 
         # Update all scripts that don't have copy_parent_dir
         updated_count = 0

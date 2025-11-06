@@ -126,6 +126,7 @@ def run_command(
     cwd: Path | None = None,
     capture_output: bool = True,
     check: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """
     Run a shell command.
@@ -135,12 +136,14 @@ def run_command(
         cwd: Working directory for command
         capture_output: Whether to capture stdout/stderr
         check: Whether to raise exception on non-zero exit
+        timeout: Timeout in seconds (None for no timeout)
 
     Returns:
         CompletedProcess instance
 
     Raises:
         subprocess.CalledProcessError: If command fails and check=True
+        subprocess.TimeoutExpired: If command times out
     """
     return subprocess.run(
         cmd,
@@ -148,6 +151,7 @@ def run_command(
         capture_output=capture_output,
         text=True,
         check=check,
+        timeout=timeout,
     )
 
 

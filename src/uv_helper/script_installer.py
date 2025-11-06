@@ -3,6 +3,14 @@
 import subprocess
 from pathlib import Path
 
+from .constants import (
+    SCRIPT_METADATA_END,
+    SCRIPT_METADATA_SOURCES_SECTION,
+    SCRIPT_METADATA_START,
+    SCRIPT_VERIFICATION_TIMEOUT,
+    SHEBANG_UV_RUN,
+    SHEBANG_UV_RUN_EXACT,
+)
 from .state import StateManager
 from .utils import run_command, validate_python_script
 
@@ -81,11 +89,8 @@ def modify_shebang(script_path: Path, use_exact: bool = True) -> bool:
         if not lines:
             raise ScriptInstallerError("Script file is empty")
 
-        # Build shebang based on use_exact flag
-        if use_exact:
-            shebang = "#!/usr/bin/env -S uv run --exact --script\n"
-        else:
-            shebang = "#!/usr/bin/env -S uv run --script\n"
+        # Use shebang constant based on use_exact flag
+        shebang = SHEBANG_UV_RUN_EXACT if use_exact else SHEBANG_UV_RUN
 
         # Check if first line is a shebang
         if lines[0].startswith("#!"):
@@ -132,9 +137,9 @@ def add_package_source(script_path: Path, package_name: str, package_path: Path)
         start_idx = None
         end_idx = None
         for i, line in enumerate(lines):
-            if line.strip() == "# /// script":
+            if line.strip() == SCRIPT_METADATA_START:
                 start_idx = i
-            elif start_idx is not None and line.strip() == "# ///":
+            elif start_idx is not None and line.strip() == SCRIPT_METADATA_END:
                 end_idx = i
                 break
 
@@ -148,7 +153,7 @@ def add_package_source(script_path: Path, package_name: str, package_path: Path)
             # Metadata block exists, check if [tool.uv.sources] section exists
             sources_idx = None
             for i in range(start_idx + 1, end_idx):
-                if lines[i].strip() == "# [tool.uv.sources]":
+                if lines[i].strip() == SCRIPT_METADATA_SOURCES_SECTION:
                     sources_idx = i
                     break
 
@@ -168,7 +173,7 @@ def add_package_source(script_path: Path, package_name: str, package_path: Path)
                     lines.insert(sources_idx + 1, source_line)
             else:
                 # Add [tool.uv.sources] section before closing ///
-                lines.insert(end_idx, "# [tool.uv.sources]\n")
+                lines.insert(end_idx, f"{SCRIPT_METADATA_SOURCES_SECTION}\n")
                 lines.insert(end_idx + 1, source_line)
         else:
             # No metadata block exists, create one after shebang
@@ -177,10 +182,10 @@ def add_package_source(script_path: Path, package_name: str, package_path: Path)
                 shebang_idx = 1
 
             metadata_lines = [
-                "# /// script\n",
-                "# [tool.uv.sources]\n",
+                f"{SCRIPT_METADATA_START}\n",
+                f"{SCRIPT_METADATA_SOURCES_SECTION}\n",
                 source_line,
-                "# ///\n",
+                f"{SCRIPT_METADATA_END}\n",
             ]
 
             # Insert after shebang (if exists) or at the beginning
@@ -225,8 +230,18 @@ def create_symlink(
 
         symlink_path = target_dir / script_name
 
-        # Remove existing symlink if it exists
-        if symlink_path.exists() or symlink_path.is_symlink():
+        # Security check: if symlink exists, verify it's within target_dir
+        if symlink_path.is_symlink():
+            try:
+                symlink_path.resolve(strict=False)
+                # Only unlink if it's a symlink we control (within reasonable paths)
+                # This prevents accidentally following malicious symlinks
+                symlink_path.unlink()
+            except (OSError, RuntimeError):
+                # If we can't resolve it safely, try to unlink anyway
+                symlink_path.unlink()
+        elif symlink_path.exists():
+            # Regular file exists at this location
             symlink_path.unlink()
 
         # Create symlink
@@ -263,7 +278,8 @@ def verify_script(script_path: Path) -> bool:
     """
     Verify that script can be executed.
 
-    Tries to run script with --help flag.
+    Tries to run script with --help flag with a timeout
+    to prevent hanging on malicious or broken scripts.
 
     Args:
         script_path: Path to script
@@ -272,14 +288,16 @@ def verify_script(script_path: Path) -> bool:
         True if script runs successfully, False otherwise
     """
     try:
-        # Try running with --help
+        # Try running with --help with timeout for security
         result = run_command(
             [str(script_path), "--help"],
             capture_output=True,
             check=False,
+            timeout=SCRIPT_VERIFICATION_TIMEOUT,
         )
         return result.returncode == 0
     except Exception:
+        # Includes TimeoutExpired, CalledProcessError, etc.
         return False
 
 

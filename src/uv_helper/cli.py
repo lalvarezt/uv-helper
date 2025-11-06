@@ -1,20 +1,27 @@
 """CLI interface for UV-Helper."""
 
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
+# Runtime version check - must be before other imports
+if sys.version_info < (3, 11):
+    print("Error: UV-Helper requires Python 3.11 or higher", file=sys.stderr)
+    version = f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    print(f"Current version: {version}", file=sys.stderr)
+    print("\nPlease upgrade your Python installation:", file=sys.stderr)
+    print("  https://www.python.org/downloads/", file=sys.stderr)
+    sys.exit(1)
+
 import click
 from rich.console import Console
-from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.table import Table
 
 from . import __version__
 from .config import load_config
-from .constants import SourceType
+from .constants import JSON_OUTPUT_INDENT, SourceType
 from .deps import resolve_dependencies
+from .display import display_install_results, display_scripts_table, display_update_results
 from .git_manager import (
     GitError,
     clone_or_update,
@@ -418,7 +425,7 @@ def install(
             results.append((script_name, False, str(e)))
 
     # Display results
-    _display_install_results(results, install_directory)
+    display_install_results(results, install_directory, console)
 
 
 @cli.command("list")
@@ -465,9 +472,9 @@ def list_scripts(ctx: click.Context, format: str, verbose: bool) -> None:
 
         # Use Pydantic's model_dump with mode='json' for JSON-compatible output
         output = [script.model_dump(mode="json") for script in scripts]
-        print(json.dumps(output, indent=2, default=str))
+        print(json.dumps(output, indent=JSON_OUTPUT_INDENT, default=str))
     else:
-        _display_scripts_table(scripts, verbose)
+        display_scripts_table(scripts, verbose, console)
 
 
 @cli.command()
@@ -640,11 +647,11 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
             state_manager.add_script(script_info)
 
             result = [(script_name, "updated")]
-            _display_update_results(result)
+            display_update_results(result, console)
 
         except (ScriptInstallerError, Exception) as e:
             result = [(script_name, f"Error: {e}")]
-            _display_update_results(result)
+            display_update_results(result, console)
             sys.exit(1)
 
         return
@@ -693,7 +700,7 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
                 script_info.ref = actual_branch
                 state_manager.add_script(script_info)
             result = [(script_name, "up-to-date")]
-            _display_update_results(result)
+            display_update_results(result, console)
             return
 
         # Reinstall script
@@ -716,11 +723,11 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
         state_manager.add_script(script_info)
 
         result = [(script_name, "updated")]
-        _display_update_results(result)
+        display_update_results(result, console)
 
     except (GitError, ScriptInstallerError) as e:
         result = [(script_name, f"Error: {e}")]
-        _display_update_results(result)
+        display_update_results(result, console)
         sys.exit(1)
 
 
@@ -832,102 +839,7 @@ def update_all(ctx: click.Context, force: bool, exact: bool | None) -> None:
             results.append((script_info.name, f"Error: {e}"))
 
     # Display results
-    _display_update_results(results)
-
-
-def _display_install_results(
-    results: list[tuple[str, bool, Path | None | str]],
-    install_dir: Path,
-) -> None:
-    """Display installation results."""
-    table = Table(title="Installation Results")
-    table.add_column("Script", style="cyan")
-    table.add_column("Status", style="green")
-    table.add_column("Location")
-
-    for script_name, success, location in results:
-        if success:
-            status = "✓ Installed"
-            loc = str(location) if location else "N/A"
-        else:
-            status = "✗ Failed"
-            loc = str(location)
-
-        table.add_row(script_name, status, loc)
-
-    console.print(table)
-
-    # Check if install_dir is in PATH
-    if str(install_dir) not in os.environ.get("PATH", ""):
-        console.print(
-            Panel(
-                f"[yellow]Warning:[/yellow] {install_dir} is not in your PATH.\n"
-                f"Add it to your shell configuration:\n"
-                f'  export PATH="{install_dir}:$PATH"',
-                title="PATH Warning",
-                border_style="yellow",
-            )
-        )
-
-
-def _display_scripts_table(scripts: list[ScriptInfo], verbose: bool) -> None:
-    """Display scripts in a table."""
-    table = Table(title="Installed Scripts")
-    table.add_column("Script", style="cyan")
-    table.add_column("Source", style="magenta")
-    table.add_column("Ref", style="green")
-    table.add_column("Installed", style="yellow")
-
-    if verbose:
-        table.add_column("Commit", style="blue")
-        table.add_column("Dependencies")
-
-    for script in scripts:
-        # Display source based on type
-        if script.source_type == SourceType.GIT and script.source_url:
-            source_display = (
-                script.source_url.split("/")[-2:][0] + "/" + script.source_url.split("/")[-1]
-            )
-            ref_display = script.ref or "N/A"
-        else:
-            # Local source
-            source_display = str(script.source_path) if script.source_path else "local"
-            ref_display = "N/A"
-
-        row = [
-            script.name,
-            source_display,
-            ref_display,
-            script.installed_at.strftime("%Y-%m-%d %H:%M"),
-        ]
-
-        if verbose:
-            commit_display = script.commit_hash if script.commit_hash else "N/A"
-            row.append(commit_display)
-            row.append(", ".join(script.dependencies) if script.dependencies else "None")
-
-        table.add_row(*row)
-
-    console.print(table)
-
-
-def _display_update_results(results: list[tuple[str, str]]) -> None:
-    """Display update results."""
-    table = Table(title="Update Results")
-    table.add_column("Script", style="cyan")
-    table.add_column("Status", style="green")
-
-    for script_name, status in results:
-        if status == "updated":
-            status_text = "[green]✓ Updated[/green]"
-        elif status == "up-to-date":
-            status_text = "[blue]✓ Up-to-date[/blue]"
-        else:
-            status_text = f"[red]✗ {status}[/red]"
-
-        table.add_row(script_name, status_text)
-
-    console.print(table)
+    display_update_results(results, console)
 
 
 if __name__ == "__main__":

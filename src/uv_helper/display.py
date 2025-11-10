@@ -71,7 +71,7 @@ def display_scripts_table(
     table.add_column("Script", style="cyan")
     table.add_column("Source", style="magenta")
     table.add_column("Ref", style="green")
-    table.add_column("Installed", style="yellow")
+    table.add_column("Updated", style="yellow")
 
     if verbose:
         table.add_column("Commit", style="blue")

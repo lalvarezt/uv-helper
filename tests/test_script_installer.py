@@ -122,11 +122,7 @@ def test_add_package_source_adds_to_existing_block(tmp_path: Path) -> None:
     """Test that add_package_source adds to existing metadata block."""
     script_path = tmp_path / "tool.py"
     script_path.write_text(
-        "#!/usr/bin/env python3\n"
-        "# /// script\n"
-        "# dependencies = ['requests']\n"
-        "# ///\n"
-        "print('hello')\n",
+        "#!/usr/bin/env python3\n# /// script\n# dependencies = ['requests']\n# ///\nprint('hello')\n",
         encoding="utf-8",
     )
     package_path = tmp_path / "mylib"

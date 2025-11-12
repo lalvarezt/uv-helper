@@ -16,9 +16,8 @@ import click
 from rich.console import Console
 
 from . import __version__
-from .commands import InstallHandler, RemoveHandler, UpdateHandler
+from .commands import InstallHandler, InstallRequest, RemoveHandler, UpdateHandler
 from .config import load_config
-from .constants import JSON_OUTPUT_INDENT
 from .display import display_install_results, display_scripts_table, display_update_results
 from .script_installer import ScriptInstallerError, verify_uv_available
 from .state import StateManager
@@ -68,9 +67,7 @@ def cli(ctx: click.Context, config: Path | None) -> None:
     "with_deps",
     help="Dependencies: requirements.txt path or comma-separated libs",
 )
-@click.option(
-    "--force", "-f", is_flag=True, help="Force overwrite existing scripts without confirmation"
-)
+@click.option("--force", "-f", is_flag=True, help="Force overwrite existing scripts without confirmation")
 @click.option("--no-symlink", is_flag=True, help="Skip creating symlinks in install directory")
 @click.option(
     "--install-dir",
@@ -171,9 +168,7 @@ def install(
     handler = InstallHandler(config, console)
 
     try:
-        results = handler.install(
-            source=git_url,
-            scripts=script,
+        request = InstallRequest(
             with_deps=with_deps,
             force=force,
             no_symlink=no_symlink,
@@ -184,6 +179,7 @@ def install(
             add_source_package=add_source_package,
             alias=alias,
         )
+        results = handler.install(source=git_url, scripts=script, request=request)
 
         install_directory = install_dir if install_dir else config.install_dir
         display_install_results(results, install_directory, console)
@@ -193,14 +189,11 @@ def install(
 
 @cli.command("list")
 @click.option(
-    "--format",
-    type=click.Choice(["table", "json"], case_sensitive=False),
-    default="table",
-    help="Output format: table (default) or json",
+    "-v", "--verbose", is_flag=True, help="Show detailed information (commit hash and dependencies)"
 )
-@click.option("-v", "--verbose", is_flag=True, help="Show commit hash and dependencies")
+@click.option("--tree", is_flag=True, help="Display scripts grouped by source in a tree view")
 @click.pass_context
-def list_scripts(ctx: click.Context, format: str, verbose: bool) -> None:
+def list_scripts(ctx: click.Context, verbose: bool, tree: bool) -> None:
     """
     List all installed scripts with their details.
 
@@ -218,9 +211,17 @@ def list_scripts(ctx: click.Context, format: str, verbose: bool) -> None:
         uv-helper list -v
 
         \b
-        # Output as JSON for scripting
-        uv-helper list --format json
+        # Display scripts grouped by source in a tree view
+        uv-helper list --tree
+
+        \b
+        # Tree view with verbose details
+        uv-helper list --tree -v
     """
+    from rich.tree import Tree
+
+    from .constants import SourceType
+
     config = ctx.obj["config"]
     state_manager = StateManager(config.state_file)
 
@@ -230,21 +231,66 @@ def list_scripts(ctx: click.Context, format: str, verbose: bool) -> None:
         console.print("No scripts installed.")
         return
 
-    if format == "json":
-        import json
+    if tree:
+        # Group scripts by source
+        groups: dict[str, list] = {}
+        for script in scripts:
+            if script.source_type == SourceType.GIT:
+                key = script.source_url or "unknown"
+            else:
+                key = str(script.source_path) if script.source_path else "local"
 
-        # Use Pydantic's model_dump with mode='json' for JSON-compatible output
-        output = [script.model_dump(mode="json") for script in scripts]
-        print(json.dumps(output, indent=JSON_OUTPUT_INDENT, default=str))
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(script)
+
+        # Display tree
+        tree_view = Tree("[bold]Installed Scripts by Source[/bold]")
+
+        for source, source_scripts in sorted(groups.items()):
+            # Shorten Git URLs
+            if source.startswith("http"):
+                display_source = "/".join(source.split("/")[-2:])
+            else:
+                display_source = source
+
+            source_node = tree_view.add(f"[magenta]{display_source}[/magenta]")
+
+            for script in sorted(source_scripts, key=lambda s: s.name):
+                # Determine display name with alias indication
+                if script.symlink_path:
+                    symlink_name = script.symlink_path.name
+                    # Show alias relationship if names differ
+                    if symlink_name != script.name:
+                        name = f"{symlink_name} -> {script.name}"
+                    else:
+                        name = symlink_name
+                else:
+                    name = script.name
+
+                if verbose:
+                    # Show detailed info in verbose mode
+                    details = []
+                    if script.commit_hash:
+                        details.append(f"commit: {script.commit_hash}")
+                    if script.dependencies:
+                        details.append(f"{len(script.dependencies)} deps")
+                    details.append(f"installed: {script.installed_at.strftime('%Y-%m-%d')}")
+
+                    details_str = f" ({', '.join(details)})" if details else ""
+                    source_node.add(f"[cyan]{name}[/cyan]{details_str}")
+                else:
+                    # Simple view - just show the name
+                    source_node.add(f"[cyan]{name}[/cyan]")
+
+        console.print(tree_view)
     else:
         display_scripts_table(scripts, verbose, console)
 
 
 @cli.command()
 @click.argument("script-name")
-@click.option(
-    "--clean-repo", "-c", is_flag=True, help="Remove repository if no other scripts use it"
-)
+@click.option("--clean-repo", "-c", is_flag=True, help="Remove repository if no other scripts use it")
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def remove(
@@ -355,6 +401,119 @@ def update_all(ctx: click.Context, force: bool, exact: bool | None) -> None:
             display_update_results(results, console)
     except ScriptInstallerError:
         sys.exit(1)
+
+
+@cli.command("doctor")
+@click.option("--repair", is_flag=True, help="Automatically repair state issues")
+@click.pass_context
+def doctor(ctx: click.Context, repair: bool) -> None:
+    """
+    Run diagnostics and show system health information.
+
+    Displays configuration paths, verifies system dependencies, and validates
+    state integrity. Optionally repairs issues found during validation.
+
+    Examples:
+
+        \b
+        # Run diagnostics
+        uv-helper doctor
+
+        \b
+        # Run diagnostics and repair issues
+        uv-helper doctor --repair
+    """
+    from rich.table import Table
+
+    config = ctx.obj["config"]
+    state_manager = StateManager(config.state_file)
+
+    # Configuration paths section
+    console.print("\n[bold]Configuration[/bold]")
+    config_table = Table(show_header=False, box=None, padding=(0, 2))
+    config_table.add_column("Label", style="dim")
+    config_table.add_column("Path")
+    config_table.add_column("Status", justify="right")
+
+    from .config import get_config_path
+
+    config_path = get_config_path()
+    config_exists = config_path.exists()
+    config_table.add_row(
+        "Config file:",
+        str(config_path),
+        "[green]✓[/green]" if config_exists else "[red]✗[/red]",
+    )
+
+    repo_dir_exists = config.repo_dir.exists()
+    config_table.add_row(
+        "Repository storage:",
+        str(config.repo_dir),
+        "[green]✓[/green]" if repo_dir_exists else "[yellow]![/yellow]",
+    )
+
+    install_dir_exists = config.install_dir.exists()
+    config_table.add_row(
+        "Install directory:",
+        str(config.install_dir),
+        "[green]✓[/green]" if install_dir_exists else "[yellow]![/yellow]",
+    )
+
+    state_file_exists = config.state_file.exists()
+    config_table.add_row(
+        "State database:",
+        str(config.state_file),
+        "[green]✓[/green]" if state_file_exists else "[yellow]![/yellow]",
+    )
+
+    console.print(config_table)
+
+    # System dependencies section
+    console.print("\n[bold]System Dependencies[/bold]")
+    deps_table = Table(show_header=False, box=None, padding=(0, 2))
+    deps_table.add_column("Label", style="dim")
+    deps_table.add_column("Status", justify="right")
+
+    try:
+        verify_uv_available()
+        deps_table.add_row("uv (Python package manager):", "[green]✓ Available[/green]")
+    except ScriptInstallerError:
+        deps_table.add_row("uv (Python package manager):", "[red]✗ Not found[/red]")
+
+    import shutil
+
+    git_available = shutil.which("git") is not None
+    deps_table.add_row(
+        "git (Version control):", "[green]✓ Available[/green]" if git_available else "[red]✗ Not found[/red]"
+    )
+
+    console.print(deps_table)
+
+    # State validation section
+    console.print("\n[bold]State Validation[/bold]")
+    issues = state_manager.validate_state()
+
+    if not issues:
+        console.print("[green]✓[/green] No issues found - state is healthy")
+    else:
+        console.print(f"[yellow]![/yellow] Found {len(issues)} issue(s):\n")
+        for issue in issues:
+            console.print(f"  • {issue}")
+
+        if repair:
+            console.print("\n[cyan]Repairing state...[/cyan]")
+            report = state_manager.repair_state(auto_fix=True)
+
+            console.print("\n[green]✓ Repair complete[/green]")
+            if report["broken_symlinks_removed"] > 0:
+                console.print(f"  • Removed {report['broken_symlinks_removed']} broken symlink(s)")
+            if report["missing_scripts_removed"] > 0:
+                removed_count = report["missing_scripts_removed"]
+                console.print(f"  • Removed {removed_count} missing script(s) from database")
+        else:
+            console.print("\n[dim]Run 'uv-helper doctor --repair' to fix these issues[/dim]")
+
+    console.print()
 
 
 if __name__ == "__main__":

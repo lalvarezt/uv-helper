@@ -1,7 +1,10 @@
 """Script installation and processing for UV-Helper."""
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+
+from pathvalidate import ValidationError, validate_filename
 
 from .constants import (
     SCRIPT_METADATA_END,
@@ -12,7 +15,7 @@ from .constants import (
     SHEBANG_UV_RUN_EXACT,
 )
 from .state import StateManager
-from .utils import run_command, validate_python_script
+from .utils import run_command, safe_rmtree, validate_python_script
 
 
 class ScriptInstallerError(Exception):
@@ -32,6 +35,22 @@ class ScriptInstallerError(Exception):
     """
 
     pass
+
+
+@dataclass
+class InstallConfig:
+    """Configuration for script installation.
+
+    Groups installation-related parameters to reduce parameter count in install_script().
+    All fields have sensible defaults matching current behavior.
+    """
+
+    install_dir: Path
+    auto_chmod: bool = True
+    auto_symlink: bool = True
+    verify_after_install: bool = True
+    use_exact: bool = True
+    script_alias: str | None = None
 
 
 def process_script_dependencies(script_path: Path, dependencies: list[str]) -> bool:
@@ -228,26 +247,42 @@ def create_symlink(
         if script_name is None:
             script_name = script_path.name
 
+        # Validate symlink name to prevent path traversal
+        try:
+            validate_filename(script_name, platform="auto")
+        except ValidationError as e:
+            raise ScriptInstallerError(f"Invalid symlink name '{script_name}': {e}") from e
+
         symlink_path = target_dir / script_name
 
-        # Security check: if symlink exists, verify it's within target_dir
-        if symlink_path.is_symlink():
+        # Fix TOCTOU race condition: Remove any existing file/symlink atomically
+        # Use missing_ok=True to avoid race if file disappears between check and unlink
+        # Try to create symlink first, handle FileExistsError if it occurs
+        max_attempts = 3
+        for attempt in range(max_attempts):
             try:
-                symlink_path.resolve(strict=False)
-                # Only unlink if it's a symlink we control (within reasonable paths)
-                # This prevents accidentally following malicious symlinks
-                symlink_path.unlink()
-            except (OSError, RuntimeError):
-                # If we can't resolve it safely, try to unlink anyway
-                symlink_path.unlink()
-        elif symlink_path.exists():
-            # Regular file exists at this location
-            symlink_path.unlink()
+                # Attempt atomic symlink creation
+                symlink_path.symlink_to(script_path)
+                return symlink_path
+            except FileExistsError:
+                # Something exists at this path - remove it and retry
+                try:
+                    # Use missing_ok to handle concurrent deletion
+                    symlink_path.unlink(missing_ok=True)
+                except (OSError, RuntimeError) as unlink_err:
+                    # If unlink fails and this is the last attempt, raise
+                    if attempt == max_attempts - 1:
+                        raise ScriptInstallerError(
+                            f"Failed to remove existing file at {symlink_path}"
+                        ) from unlink_err
+                # Retry symlink creation
+                continue
 
-        # Create symlink
-        symlink_path.symlink_to(script_path)
+        # If we exit the loop without returning, raise an error
+        raise ScriptInstallerError(
+            f"Failed to create symlink at {symlink_path} after {max_attempts} attempts"
+        )
 
-        return symlink_path
     except OSError as e:
         raise ScriptInstallerError(f"Failed to create symlink: {e}") from e
 
@@ -266,9 +301,9 @@ def make_executable(script_path: Path) -> bool:
         ScriptInstallerError: If chmod fails
     """
     try:
-        # Add execute permission: chmod +x
+        # Add execute permission for owner only (security best practice)
         current_mode = script_path.stat().st_mode
-        script_path.chmod(current_mode | 0o111)  # Add execute for user, group, other
+        script_path.chmod(current_mode | 0o100)  # Add execute for user only
         return True
     except OSError as e:
         raise ScriptInstallerError(f"Failed to make script executable: {e}") from e
@@ -296,8 +331,11 @@ def verify_script(script_path: Path) -> bool:
             timeout=SCRIPT_VERIFICATION_TIMEOUT,
         )
         return result.returncode == 0
-    except Exception:
-        # Includes TimeoutExpired, CalledProcessError, etc.
+    except subprocess.TimeoutExpired:
+        # Script timed out
+        return False
+    except (subprocess.CalledProcessError, OSError, FileNotFoundError):
+        # Script failed to run or doesn't exist
         return False
 
 
@@ -335,10 +373,8 @@ def remove_script_installation(
 
             # Only delete repo if this is the last script from it
             if len(scripts_from_repo) == 1:
-                import shutil
-
                 if script_info.repo_path.exists():
-                    shutil.rmtree(script_info.repo_path)
+                    safe_rmtree(script_info.repo_path)
 
         # Remove from state
         state_manager.remove_script(script_name)
@@ -368,12 +404,7 @@ def verify_uv_available() -> bool:
 def install_script(
     script_path: Path,
     dependencies: list[str],
-    install_dir: Path,
-    auto_chmod: bool = True,
-    auto_symlink: bool = True,
-    verify_after_install: bool = True,
-    use_exact: bool = True,
-    script_alias: str | None = None,
+    config: InstallConfig,
 ) -> Path | None:
     """
     Install a script with all processing steps.
@@ -389,12 +420,7 @@ def install_script(
     Args:
         script_path: Path to script file
         dependencies: List of dependencies
-        install_dir: Installation directory for symlinks
-        auto_chmod: Whether to make script executable
-        auto_symlink: Whether to create symlink
-        verify_after_install: Whether to verify after installation
-        use_exact: Whether to use --exact flag in shebang for precise dependency management
-        script_alias: Custom name for the symlink (default: script filename)
+        config: Installation configuration (install_dir, flags, etc.)
 
     Returns:
         Path to symlink if created, None otherwise
@@ -411,19 +437,19 @@ def install_script(
         process_script_dependencies(script_path, dependencies)
 
     # Modify shebang
-    modify_shebang(script_path, use_exact=use_exact)
+    modify_shebang(script_path, use_exact=config.use_exact)
 
     # Make executable
-    if auto_chmod:
+    if config.auto_chmod:
         make_executable(script_path)
 
     # Create symlink
     symlink_path = None
-    if auto_symlink:
-        symlink_path = create_symlink(script_path, install_dir, script_alias)
+    if config.auto_symlink:
+        symlink_path = create_symlink(script_path, config.install_dir, config.script_alias)
 
     # Verify
-    if verify_after_install:
+    if config.verify_after_install:
         if not verify_script(script_path):
             # Don't fail, just warn (script might not support --help)
             pass

@@ -1,10 +1,8 @@
 """Update command handlers for UV-Helper."""
 
-import shutil
 from datetime import datetime
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from ..config import Config
 from ..constants import SourceType
@@ -15,14 +13,15 @@ from ..git_manager import (
     get_default_branch,
     verify_git_available,
 )
-from ..script_installer import ScriptInstallerError, install_script
+from ..script_installer import InstallConfig, ScriptInstallerError, install_script
 from ..state import ScriptInfo, StateManager
+from ..utils import copy_directory_contents, handle_git_error, progress_spinner
 
 
 class UpdateHandler:
     """Handles script update logic."""
 
-    def __init__(self, config: Config, console: Console):
+    def __init__(self, config: Config, console: Console) -> None:
         """
         Initialize update handler.
 
@@ -46,21 +45,13 @@ class UpdateHandler:
         Returns:
             Tuple of (script_name, status)
         """
-        # Check if script exists - try by original name first, then by symlink name
-        script_info = self.state_manager.get_script(script_name)
-        if not script_info:
-            # Try searching by symlink name (alias)
-            script_info = self.state_manager.get_script_by_symlink(script_name)
-
+        # Check if script exists - try by original name or symlink name
+        script_info = self.state_manager.get_script_flexible(script_name)
         if not script_info:
             self.console.print(f"[red]Error:[/red] Script '{script_name}' not found.")
             raise ValueError(f"Script '{script_name}' not found")
 
-        # Determine display name (use symlink name if available)
-        if script_info.symlink_path:
-            display_name = script_info.symlink_path.name
-        else:
-            display_name = script_info.name
+        display_name = script_info.display_name
 
         # Branch based on source type (use actual script name from state, not user input)
         if script_info.source_type == SourceType.LOCAL:
@@ -91,11 +82,7 @@ class UpdateHandler:
         git_checked = False
 
         for script_info in scripts:
-            # Determine display name (alias if exists)
-            if script_info.symlink_path:
-                display_name = script_info.symlink_path.name
-            else:
-                display_name = script_info.name
+            display_name = script_info.display_name
 
             # Skip local scripts (they need manual source updates)
             if script_info.source_type == SourceType.LOCAL:
@@ -104,11 +91,7 @@ class UpdateHandler:
 
             # Verify git available once
             if not git_checked:
-                try:
-                    verify_git_available()
-                except GitError as e:
-                    self.console.print(f"[red]Error:[/red] Git: {e}")
-                    raise
+                handle_git_error(self.console, lambda: verify_git_available())
                 git_checked = True
 
             try:
@@ -124,40 +107,24 @@ class UpdateHandler:
     ) -> tuple[str, str]:
         """Update a local script."""
         if not script_info.source_path or not script_info.source_path.exists():
-            self.console.print(
-                f"[red]Error:[/red] Source directory not found: {script_info.source_path}"
-            )
+            self.console.print(f"[red]Error:[/red] Source directory not found: {script_info.source_path}")
             self.console.print("The original source directory may have been moved or deleted.")
             raise FileNotFoundError(f"Source directory not found: {script_info.source_path}")
 
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=self.console,
-                transient=True,
-            ) as progress:
-                task = progress.add_task("Updating from source...", total=None)
-
+            with progress_spinner("Updating from source...", self.console):
                 # Re-copy from source directory
                 if script_info.copy_parent_dir:
                     # Copy entire directory contents
-                    for item in script_info.source_path.iterdir():
-                        dest = script_info.repo_path / item.name
-                        if item.is_dir():
-                            if dest.exists():
-                                shutil.rmtree(dest)
-                            shutil.copytree(item, dest)
-                        else:
-                            shutil.copy2(item, dest)
+                    copy_directory_contents(script_info.source_path, script_info.repo_path)
                 else:
                     # Copy just the script file
+                    import shutil
+
                     source_script = script_info.source_path / script_name
                     dest_script = script_info.repo_path / script_name
                     dest_script.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(source_script, dest_script)
-
-                progress.update(task, completed=True)
 
             # Reinstall script (preserve alias if it exists)
             script_path = script_info.repo_path / script_name
@@ -166,15 +133,18 @@ class UpdateHandler:
             if script_info.symlink_path and script_info.symlink_path.name != script_name:
                 script_alias = script_info.symlink_path.name
 
-            symlink_path = install_script(
-                script_path,
-                script_info.dependencies,
-                self.config.install_dir,
+            install_config = InstallConfig(
+                install_dir=self.config.install_dir,
                 auto_chmod=self.config.auto_chmod,
                 auto_symlink=self.config.auto_symlink,
                 verify_after_install=self.config.verify_after_install,
                 use_exact=exact if exact is not None else self.config.use_exact_flag,
                 script_alias=script_alias,
+            )
+            symlink_path = install_script(
+                script_path,
+                script_info.dependencies,
+                install_config,
             )
 
             # Update state
@@ -182,20 +152,10 @@ class UpdateHandler:
             script_info.symlink_path = symlink_path
             self.state_manager.add_script(script_info)
 
-            # Return display name (alias if exists)
-            if script_info.symlink_path:
-                display_name = script_info.symlink_path.name
-            else:
-                display_name = script_name
-            return (display_name, "updated")
+            return (script_info.display_name, "updated")
 
         except (ScriptInstallerError, Exception) as e:
-            # Return display name (alias if exists)
-            if script_info.symlink_path:
-                display_name = script_info.symlink_path.name
-            else:
-                display_name = script_name
-            return (display_name, f"Error: {e}")
+            return (script_info.display_name, f"Error: {e}")
 
     def _update_git_script(
         self, script_info: ScriptInfo, script_name: str, force: bool, exact: bool | None
@@ -204,14 +164,8 @@ class UpdateHandler:
         assert script_info.source_url is not None
         assert script_info.ref is not None
 
-        try:
-            verify_git_available()
-        except GitError as e:
-            self.console.print(f"[red]Error:[/red] Git: {e}")
-            raise
-
-        # Determine display name (alias if exists)
-        display_name = script_info.symlink_path.name if script_info.symlink_path else script_name
+        handle_git_error(self.console, lambda: verify_git_available())
+        display_name = script_info.display_name
 
         try:
             status = self._update_git_script_internal(script_info, force, exact)
@@ -219,29 +173,18 @@ class UpdateHandler:
         except (GitError, ScriptInstallerError) as e:
             return (display_name, f"Error: {e}")
 
-    def _update_git_script_internal(
-        self, script_info: ScriptInfo, force: bool, exact: bool | None
-    ) -> str:
+    def _update_git_script_internal(self, script_info: ScriptInfo, force: bool, exact: bool | None) -> str:
         """Internal method to update a Git script."""
         assert script_info.source_url is not None
         assert script_info.ref is not None
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=self.console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Updating repository...", total=None)
-
+        with progress_spinner("Updating repository...", self.console):
             clone_or_update(
                 script_info.source_url,
                 script_info.ref,
                 script_info.repo_path,
                 depth=self.config.clone_depth,
             )
-
-            progress.update(task, completed=True)
 
         # Check if there are updates
         new_commit_hash = get_current_commit_hash(script_info.repo_path)
@@ -266,15 +209,18 @@ class UpdateHandler:
         if script_info.symlink_path and script_info.symlink_path.name != script_info.name:
             script_alias = script_info.symlink_path.name
 
-        symlink_path = install_script(
-            script_path,
-            script_info.dependencies,
-            self.config.install_dir,
+        install_config = InstallConfig(
+            install_dir=self.config.install_dir,
             auto_chmod=self.config.auto_chmod,
             auto_symlink=self.config.auto_symlink,
             verify_after_install=self.config.verify_after_install,
             use_exact=exact if exact is not None else self.config.use_exact_flag,
             script_alias=script_alias,
+        )
+        symlink_path = install_script(
+            script_path,
+            script_info.dependencies,
+            install_config,
         )
 
         # Update state with new commit hash and actual branch

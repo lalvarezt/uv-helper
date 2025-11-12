@@ -76,14 +76,17 @@ def test_install_script_sets_permissions_and_symlink(tmp_path: Path, monkeypatch
     )
     monkeypatch.setattr(script_installer, "verify_script", lambda _: True)
 
-    symlink_path = script_installer.install_script(
-        script_path,
-        ["requests"],
-        install_dir,
+    install_config = script_installer.InstallConfig(
+        install_dir=install_dir,
         auto_chmod=True,
         auto_symlink=True,
         verify_after_install=True,
         use_exact=True,
+    )
+    symlink_path = script_installer.install_script(
+        script_path,
+        ["requests"],
+        install_config,
     )
 
     assert dependency_calls == [["requests"]]
@@ -119,11 +122,7 @@ def test_add_package_source_adds_to_existing_block(tmp_path: Path) -> None:
     """Test that add_package_source adds to existing metadata block."""
     script_path = tmp_path / "tool.py"
     script_path.write_text(
-        "#!/usr/bin/env python3\n"
-        "# /// script\n"
-        "# dependencies = ['requests']\n"
-        "# ///\n"
-        "print('hello')\n",
+        "#!/usr/bin/env python3\n# /// script\n# dependencies = ['requests']\n# ///\nprint('hello')\n",
         encoding="utf-8",
     )
     package_path = tmp_path / "mylib"

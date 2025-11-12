@@ -36,11 +36,16 @@ class ScriptInfo(BaseModel):
     source_path: Path | None = None  # Original source path for updates
     copy_parent_dir: bool = False  # Whether entire parent directory was copied
 
+    @property
+    def display_name(self) -> str:
+        """Get display name (symlink name if exists, otherwise script name)."""
+        return self.symlink_path.name if self.symlink_path else self.name
+
 
 class StateManager:
     """Manages state using TinyDB for automatic atomic updates and query support."""
 
-    def __init__(self, state_file: Path):
+    def __init__(self, state_file: Path) -> None:
         """
         Initialize state manager with TinyDB.
 
@@ -89,6 +94,25 @@ class StateManager:
         """
         return self.get_script(name) is not None
 
+    def get_script_flexible(self, name: str) -> ScriptInfo | None:
+        """
+        Get script by name or symlink name.
+
+        Tries to find script first by name, then by symlink name (alias).
+
+        Args:
+            name: Script name or symlink name
+
+        Returns:
+            ScriptInfo if found, None otherwise
+        """
+        # Try by name first
+        script = self.get_script(name)
+        if script:
+            return script
+        # Try by symlink
+        return self.get_script_by_symlink(name)
+
     def list_scripts(self) -> list[ScriptInfo]:
         """List all installed scripts."""
         results = self.scripts.all()
@@ -118,9 +142,102 @@ class StateManager:
         Returns:
             ScriptInfo if found, None otherwise
         """
-        # Search through all scripts and match by symlink name
-        all_scripts = self.list_scripts()
-        for script in all_scripts:
-            if script.symlink_path and script.symlink_path.name == symlink_name:
-                return script
-        return None
+        # Use TinyDB query with custom test for better performance
+        Script = Query()
+        results = self.scripts.search(
+            Script.symlink_path.test(lambda path: path is not None and Path(path).name == symlink_name)
+        )
+        return ScriptInfo.model_validate(results[0]) if results else None
+
+    def validate_state(self) -> list[str]:
+        """
+        Validate state integrity.
+
+        Checks:
+        - Symlinks exist and point to valid targets
+        - Script files exist in repo_path
+        - Repo paths exist
+        - Source paths exist for local scripts
+
+        Returns:
+            List of validation issues (empty if valid)
+        """
+        issues = []
+        scripts = self.list_scripts()
+
+        for script in scripts:
+            # Check symlink validity
+            if script.symlink_path:
+                if not script.symlink_path.exists():
+                    issues.append(f"Broken symlink for '{script.name}': {script.symlink_path}")
+                elif not script.symlink_path.is_symlink():
+                    issues.append(f"Expected symlink but found file: {script.symlink_path}")
+                else:
+                    try:
+                        target = script.symlink_path.resolve()
+                        expected = script.repo_path / script.name
+                        if target != expected:
+                            issues.append(
+                                f"Symlink points to wrong target for '{script.name}': {target} != {expected}"
+                            )
+                    except (OSError, RuntimeError):
+                        issues.append(f"Cannot resolve symlink for '{script.name}': {script.symlink_path}")
+
+            # Check script file exists
+            script_file = script.repo_path / script.name
+            if not script_file.exists():
+                issues.append(f"Script file missing for '{script.name}': {script_file}")
+
+            # Check repo path exists
+            if not script.repo_path.exists():
+                issues.append(f"Repository directory missing for '{script.name}': {script.repo_path}")
+
+            # Check source_path for local scripts
+            if script.source_type == SourceType.LOCAL and script.source_path:
+                if not script.source_path.exists():
+                    issues.append(
+                        f"Source directory missing for local script '{script.name}': {script.source_path}"
+                    )
+
+        return issues
+
+    def repair_state(self, auto_fix: bool = False) -> dict[str, int]:
+        """
+        Repair state inconsistencies.
+
+        Args:
+            auto_fix: If True, automatically fix issues. If False, return report only.
+
+        Returns:
+            Dict with counts: {
+                'broken_symlinks_removed': int,
+                'missing_scripts_removed': int,
+            }
+        """
+        report = {"broken_symlinks_removed": 0, "missing_scripts_removed": 0}
+
+        scripts = self.list_scripts()
+        to_remove = []
+
+        for script in scripts:
+            # Remove scripts with missing files
+            script_file = script.repo_path / script.name
+            if not script_file.exists() and not script.repo_path.exists():
+                to_remove.append(script.name)
+                report["missing_scripts_removed"] += 1
+
+            # Remove broken symlinks
+            elif script.symlink_path and not script.symlink_path.exists():
+                if auto_fix:
+                    try:
+                        script.symlink_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                report["broken_symlinks_removed"] += 1
+
+        # Remove invalid scripts from state
+        if auto_fix:
+            for name in to_remove:
+                self.remove_script(name)
+
+        return report

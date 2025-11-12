@@ -12,7 +12,7 @@ from ..utils import prompt_confirm
 class RemoveHandler:
     """Handles script removal logic."""
 
-    def __init__(self, config: Config, console: Console):
+    def __init__(self, config: Config, console: Console) -> None:
         """
         Initialize remove handler.
 
@@ -37,21 +37,13 @@ class RemoveHandler:
             ValueError: If script not found
             ScriptInstallerError: If removal fails
         """
-        # Check if script exists - try by original name first, then by symlink name
-        script_info = self.state_manager.get_script(script_name)
-        if not script_info:
-            # Try searching by symlink name (alias)
-            script_info = self.state_manager.get_script_by_symlink(script_name)
-
+        # Check if script exists - try by original name or symlink name
+        script_info = self.state_manager.get_script_flexible(script_name)
         if not script_info:
             self.console.print(f"[red]Error:[/red] Script '{script_name}' not found.")
             raise ValueError(f"Script '{script_name}' not found")
 
-        # Determine display name (use symlink name if available)
-        if script_info.symlink_path:
-            display_name = script_info.symlink_path.name
-        else:
-            display_name = script_info.name
+        display_name = script_info.display_name
 
         # Confirm removal
         if not force:
@@ -60,9 +52,7 @@ class RemoveHandler:
             if script_info.source_type == SourceType.GIT:
                 source_display = script_info.source_url or "N/A"
             else:
-                source_display = (
-                    str(script_info.source_path) if script_info.source_path else "local"
-                )
+                source_display = str(script_info.source_path) if script_info.source_path else "local"
 
             self.console.print(f"  Source: {source_display}")
             self.console.print(f"  Symlink: {script_info.symlink_path}")

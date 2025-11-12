@@ -16,7 +16,7 @@ import click
 from rich.console import Console
 
 from . import __version__
-from .commands import InstallHandler, RemoveHandler, UpdateHandler
+from .commands import InstallHandler, InstallRequest, RemoveHandler, UpdateHandler
 from .config import load_config
 from .constants import JSON_OUTPUT_INDENT
 from .display import display_install_results, display_scripts_table, display_update_results
@@ -169,9 +169,7 @@ def install(
     handler = InstallHandler(config, console)
 
     try:
-        results = handler.install(
-            source=git_url,
-            scripts=script,
+        request = InstallRequest(
             with_deps=with_deps,
             force=force,
             no_symlink=no_symlink,
@@ -182,6 +180,7 @@ def install(
             add_source_package=add_source_package,
             alias=alias,
         )
+        results = handler.install(source=git_url, scripts=script, request=request)
 
         install_directory = install_dir if install_dir else config.install_dir
         display_install_results(results, install_directory, console)

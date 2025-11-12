@@ -58,10 +58,28 @@ class InstallationContext:
 
 
 @dataclass
-class ScriptInstallOptions:
-    """Options for script installation.
+class InstallRequest:
+    """Installation request parameters.
 
-    Groups installation configuration parameters.
+    Groups all CLI parameters to reduce method parameter count.
+    """
+
+    with_deps: str | None
+    force: bool
+    no_symlink: bool
+    install_dir: Path | None
+    verbose: bool
+    exact: bool | None
+    copy_parent_dir: bool
+    add_source_package: str | None
+    alias: str | None
+
+
+@dataclass
+class ScriptInstallOptions:
+    """Internal options for script installation.
+
+    Used internally to pass processed options to installation methods.
     """
 
     dependencies: list[str]
@@ -91,15 +109,7 @@ class InstallHandler:
         self,
         source: str,
         scripts: tuple[str, ...],
-        with_deps: str | None,
-        force: bool,
-        no_symlink: bool,
-        install_dir: Path | None,
-        verbose: bool,
-        exact: bool | None,
-        copy_parent_dir: bool,
-        add_source_package: str | None,
-        alias: str | None = None,
+        request: InstallRequest,
     ) -> list[tuple[str, bool, Path | None | str]]:
         """
         Install Python scripts from a Git repository or local directory.
@@ -107,15 +117,7 @@ class InstallHandler:
         Args:
             source: Git URL or local directory path
             scripts: Script names to install
-            with_deps: Dependencies specification
-            force: Force overwrite without confirmation
-            no_symlink: Skip symlink creation
-            install_dir: Custom installation directory
-            verbose: Show detailed output
-            exact: Use --exact flag in shebang
-            copy_parent_dir: Copy entire parent directory
-            add_source_package: Add source as package dependency
-            alias: Custom name for the installed script (only for single script)
+            request: Installation request with all CLI parameters
 
         Returns:
             List of (script_name, success, location_or_error) tuples
@@ -130,13 +132,13 @@ class InstallHandler:
             raise ValueError(f"Invalid source: {source}")
 
         # Validate --add-source-package requirements
-        if add_source_package is not None and is_local and not copy_parent_dir:
+        if request.add_source_package is not None and is_local and not request.copy_parent_dir:
             error_msg = "[red]Error:[/red] --add-source-package requires --copy-parent-dir for local sources"
             self.console.print(error_msg)
             raise ValueError("--add-source-package requires --copy-parent-dir for local sources")
 
         # Check for existing installations
-        if not self._check_existing_scripts(scripts, force):
+        if not self._check_existing_scripts(scripts, request.force):
             return []
 
         # Handle source-specific operations
@@ -144,14 +146,14 @@ class InstallHandler:
             repo_path, source_path, commit_hash, actual_ref, git_ref = self._handle_git_source(source)
         else:
             repo_path, source_path, commit_hash, actual_ref, git_ref = self._handle_local_source(
-                source, scripts, copy_parent_dir
+                source, scripts, request.copy_parent_dir
             )
 
         # Resolve dependencies
-        dependencies = self._resolve_dependencies(with_deps, repo_path, source_path, verbose)
+        dependencies = self._resolve_dependencies(request.with_deps, repo_path, source_path, request.verbose)
 
         # Determine installation directory
-        install_directory = install_dir if install_dir else self.config.install_dir
+        install_directory = request.install_dir if request.install_dir else self.config.install_dir
         ensure_dir(install_directory)
 
         # Create installation context and options
@@ -160,7 +162,7 @@ class InstallHandler:
             source_path=source_path,
             is_local=is_local,
             is_git=is_git,
-            copy_parent_dir=copy_parent_dir,
+            copy_parent_dir=request.copy_parent_dir,
             commit_hash=commit_hash,
             actual_ref=actual_ref,
             git_ref=git_ref,
@@ -168,10 +170,10 @@ class InstallHandler:
         options = ScriptInstallOptions(
             dependencies=dependencies,
             install_directory=install_directory,
-            no_symlink=no_symlink,
-            exact=exact,
-            add_source_package=add_source_package,
-            alias=alias,
+            no_symlink=request.no_symlink,
+            exact=request.exact,
+            add_source_package=request.add_source_package,
+            alias=request.alias,
         )
 
         # Install scripts

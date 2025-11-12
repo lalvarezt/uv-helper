@@ -10,7 +10,7 @@ from typing import Iterator, TypeVar
 
 from giturlparse import parse as parse_git_url_base
 from giturlparse import validate as validate_git_url
-from pathvalidate import ValidationError, sanitize_filename, validate_filename
+from pathvalidate import sanitize_filename
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
@@ -249,6 +249,38 @@ def progress_spinner(description: str, console: Console) -> Iterator[tuple[Progr
         yield progress, task
 
 
+def safe_rmtree(path: Path) -> None:
+    """
+    Safely remove a directory tree, preventing symlink attacks.
+
+    Validates that the path is not a symlink before removal to prevent
+    following malicious symlinks to sensitive system directories.
+
+    Args:
+        path: Directory path to remove
+
+    Raises:
+        ValueError: If path is a symlink (security protection)
+        OSError: If removal fails
+    """
+    # Security check: refuse to remove if path is a symlink
+    # This prevents attacks where a symlink points to /etc or other sensitive dirs
+    if path.is_symlink():
+        raise ValueError(f"Refusing to remove symlinked directory: {path}")
+
+    # Additional check: resolve path and ensure it's what we expect
+    try:
+        resolved = path.resolve(strict=True)
+        # Only proceed if path exists and is a directory
+        if not resolved.is_dir():
+            raise ValueError(f"Path is not a directory: {path}")
+    except (OSError, RuntimeError) as e:
+        raise ValueError(f"Cannot safely resolve path {path}: {e}") from e
+
+    # Safe to remove - it's a real directory, not a symlink
+    shutil.rmtree(path)
+
+
 def copy_directory_contents(source: Path, dest: Path) -> None:
     """
     Copy all contents from source directory to destination directory.
@@ -266,7 +298,7 @@ def copy_directory_contents(source: Path, dest: Path) -> None:
         dest_item = dest / item.name
         if item.is_dir():
             if dest_item.exists():
-                shutil.rmtree(dest_item)
+                safe_rmtree(dest_item)
             shutil.copytree(item, dest_item)
         else:
             shutil.copy2(item, dest_item)

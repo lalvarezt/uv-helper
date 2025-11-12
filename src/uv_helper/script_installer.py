@@ -15,7 +15,7 @@ from .constants import (
     SHEBANG_UV_RUN_EXACT,
 )
 from .state import StateManager
-from .utils import run_command, validate_python_script
+from .utils import run_command, safe_rmtree, validate_python_script
 
 
 class ScriptInstallerError(Exception):
@@ -255,24 +255,34 @@ def create_symlink(
 
         symlink_path = target_dir / script_name
 
-        # Security check: if symlink exists, verify it's within target_dir
-        if symlink_path.is_symlink():
+        # Fix TOCTOU race condition: Remove any existing file/symlink atomically
+        # Use missing_ok=True to avoid race if file disappears between check and unlink
+        # Try to create symlink first, handle FileExistsError if it occurs
+        max_attempts = 3
+        for attempt in range(max_attempts):
             try:
-                symlink_path.resolve(strict=False)
-                # Only unlink if it's a symlink we control (within reasonable paths)
-                # This prevents accidentally following malicious symlinks
-                symlink_path.unlink()
-            except (OSError, RuntimeError):
-                # If we can't resolve it safely, try to unlink anyway
-                symlink_path.unlink()
-        elif symlink_path.exists():
-            # Regular file exists at this location
-            symlink_path.unlink()
+                # Attempt atomic symlink creation
+                symlink_path.symlink_to(script_path)
+                return symlink_path
+            except FileExistsError:
+                # Something exists at this path - remove it and retry
+                try:
+                    # Use missing_ok to handle concurrent deletion
+                    symlink_path.unlink(missing_ok=True)
+                except (OSError, RuntimeError) as unlink_err:
+                    # If unlink fails and this is the last attempt, raise
+                    if attempt == max_attempts - 1:
+                        raise ScriptInstallerError(
+                            f"Failed to remove existing file at {symlink_path}"
+                        ) from unlink_err
+                # Retry symlink creation
+                continue
 
-        # Create symlink
-        symlink_path.symlink_to(script_path)
+        # If we exit the loop without returning, raise an error
+        raise ScriptInstallerError(
+            f"Failed to create symlink at {symlink_path} after {max_attempts} attempts"
+        )
 
-        return symlink_path
     except OSError as e:
         raise ScriptInstallerError(f"Failed to create symlink: {e}") from e
 
@@ -363,10 +373,8 @@ def remove_script_installation(
 
             # Only delete repo if this is the last script from it
             if len(scripts_from_repo) == 1:
-                import shutil
-
                 if script_info.repo_path.exists():
-                    shutil.rmtree(script_info.repo_path)
+                    safe_rmtree(script_info.repo_path)
 
         # Remove from state
         state_manager.remove_script(script_name)

@@ -130,10 +130,7 @@ def update_repository(repo_path: Path) -> bool:
         GitError: If update fails
     """
     try:
-        # Fetch latest changes
-        run_command(["git", "fetch", "origin"], cwd=repo_path, check=True)
-
-        # Pull changes
+        # Pull changes (includes fetch)
         run_command(["git", "pull"], cwd=repo_path, check=True)
 
         return True

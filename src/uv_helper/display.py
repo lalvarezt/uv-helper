@@ -90,9 +90,7 @@ def display_scripts_table(
 
         # Display source based on type
         if script.source_type == SourceType.GIT and script.source_url:
-            source_display = (
-                script.source_url.split("/")[-2:][0] + "/" + script.source_url.split("/")[-1]
-            )
+            source_display = script.source_url.split("/")[-2:][0] + "/" + script.source_url.split("/")[-1]
             ref_display = script.ref or "N/A"
         else:
             # Local source

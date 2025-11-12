@@ -3,12 +3,19 @@
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator, TypeVar
 
 from giturlparse import parse as parse_git_url_base
 from giturlparse import validate as validate_git_url
 from pathvalidate import ValidationError, sanitize_filename, validate_filename
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
+
+T = TypeVar("T")
 
 
 def ensure_dir(path: Path) -> Path:
@@ -61,7 +68,8 @@ def is_local_directory(path: str) -> bool:
     try:
         expanded = expand_path(path)
         return expanded.is_dir()
-    except Exception:
+    except (OSError, ValueError, RuntimeError):
+        # Path resolution or access errors
         return False
 
 
@@ -214,6 +222,85 @@ def validate_python_script(script_path: Path) -> bool:
     except (SyntaxError, ValueError):
         # Invalid Python syntax
         return False
-    except Exception:
-        # Other errors (encoding, I/O, etc.)
+    except (OSError, UnicodeDecodeError):
+        # File access or encoding errors
         return False
+
+
+@contextmanager
+def progress_spinner(description: str, console: Console) -> Iterator[tuple[Progress, int]]:
+    """
+    Create a progress spinner context manager.
+
+    Args:
+        description: Task description to display
+        console: Rich console for output
+
+    Yields:
+        Tuple of (progress, task_id)
+    """
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(description, total=None)
+        yield progress, task
+
+
+def copy_directory_contents(source: Path, dest: Path) -> None:
+    """
+    Copy all contents from source directory to destination directory.
+
+    Overwrites existing files and directories in destination.
+
+    Args:
+        source: Source directory path
+        dest: Destination directory path
+
+    Raises:
+        OSError: If copy operation fails
+    """
+    for item in source.iterdir():
+        dest_item = dest / item.name
+        if item.is_dir():
+            if dest_item.exists():
+                shutil.rmtree(dest_item)
+            shutil.copytree(item, dest_item)
+        else:
+            shutil.copy2(item, dest_item)
+
+
+def handle_git_error(console: Console, operation: Callable[[], T], error_prefix: str = "Git") -> T:
+    """
+    Execute a git operation with consistent error handling.
+
+    Catches GitError exceptions, displays formatted error messages via console,
+    and re-raises the exception for upstream handling.
+
+    Args:
+        console: Rich console for error output
+        operation: Callable that performs the git operation
+        error_prefix: Prefix for error messages (default: "Git")
+
+    Returns:
+        Result from the operation callable
+
+    Raises:
+        GitError: Re-raised from operation failures
+
+    Example:
+        handle_git_error(
+            console,
+            lambda: verify_git_available(),
+            "Git verification"
+        )
+    """
+    from .git_manager import GitError
+
+    try:
+        return operation()
+    except GitError as e:
+        console.print(f"[red]Error:[/red] {error_prefix}: {e}")
+        raise

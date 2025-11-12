@@ -76,14 +76,17 @@ def test_install_script_sets_permissions_and_symlink(tmp_path: Path, monkeypatch
     )
     monkeypatch.setattr(script_installer, "verify_script", lambda _: True)
 
-    symlink_path = script_installer.install_script(
-        script_path,
-        ["requests"],
-        install_dir,
+    install_config = script_installer.InstallConfig(
+        install_dir=install_dir,
         auto_chmod=True,
         auto_symlink=True,
         verify_after_install=True,
         use_exact=True,
+    )
+    symlink_path = script_installer.install_script(
+        script_path,
+        ["requests"],
+        install_config,
     )
 
     assert dependency_calls == [["requests"]]

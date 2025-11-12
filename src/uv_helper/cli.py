@@ -68,9 +68,7 @@ def cli(ctx: click.Context, config: Path | None) -> None:
     "with_deps",
     help="Dependencies: requirements.txt path or comma-separated libs",
 )
-@click.option(
-    "--force", "-f", is_flag=True, help="Force overwrite existing scripts without confirmation"
-)
+@click.option("--force", "-f", is_flag=True, help="Force overwrite existing scripts without confirmation")
 @click.option("--no-symlink", is_flag=True, help="Skip creating symlinks in install directory")
 @click.option(
     "--install-dir",
@@ -242,9 +240,7 @@ def list_scripts(ctx: click.Context, format: str, verbose: bool) -> None:
 
 @cli.command()
 @click.argument("script-name")
-@click.option(
-    "--clean-repo", "-c", is_flag=True, help="Remove repository if no other scripts use it"
-)
+@click.option("--clean-repo", "-c", is_flag=True, help="Remove repository if no other scripts use it")
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def remove(

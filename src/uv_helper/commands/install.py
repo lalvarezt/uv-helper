@@ -1,19 +1,18 @@
 """Install command handler for UV-Helper."""
 
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from pathvalidate import ValidationError, validate_filename, validate_filepath
+from pathvalidate import ValidationError, validate_filepath
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from ..config import Config
 from ..constants import SourceType
 from ..deps import resolve_dependencies
 from ..git_manager import (
-    GitError,
+    GitRef,
     clone_or_update,
     get_current_commit_hash,
     get_default_branch,
@@ -21,26 +20,62 @@ from ..git_manager import (
     verify_git_available,
 )
 from ..script_installer import (
+    InstallConfig,
     ScriptInstallerError,
     add_package_source,
     install_script,
 )
 from ..state import ScriptInfo, StateManager
 from ..utils import (
+    copy_directory_contents,
     ensure_dir,
     expand_path,
     get_repo_name_from_url,
+    handle_git_error,
     is_git_url,
     is_local_directory,
+    progress_spinner,
     prompt_confirm,
     sanitize_directory_name,
 )
 
 
+@dataclass
+class InstallationContext:
+    """Context for installation source.
+
+    Groups source-related parameters to reduce parameter count in installation methods.
+    """
+
+    repo_path: Path
+    source_path: Path | None
+    is_local: bool
+    is_git: bool
+    copy_parent_dir: bool
+    commit_hash: str | None
+    actual_ref: str | None
+    git_ref: GitRef | None
+
+
+@dataclass
+class ScriptInstallOptions:
+    """Options for script installation.
+
+    Groups installation configuration parameters.
+    """
+
+    dependencies: list[str]
+    install_directory: Path
+    no_symlink: bool
+    exact: bool | None
+    add_source_package: str | None
+    alias: str | None
+
+
 class InstallHandler:
     """Handles script installation logic."""
 
-    def __init__(self, config: Config, console: Console):
+    def __init__(self, config: Config, console: Console) -> None:
         """
         Initialize install handler.
 
@@ -96,10 +131,7 @@ class InstallHandler:
 
         # Validate --add-source-package requirements
         if add_source_package is not None and is_local and not copy_parent_dir:
-            error_msg = (
-                "[red]Error:[/red] --add-source-package requires --copy-parent-dir "
-                "for local sources"
-            )
+            error_msg = "[red]Error:[/red] --add-source-package requires --copy-parent-dir for local sources"
             self.console.print(error_msg)
             raise ValueError("--add-source-package requires --copy-parent-dir for local sources")
 
@@ -109,9 +141,7 @@ class InstallHandler:
 
         # Handle source-specific operations
         if is_git:
-            repo_path, source_path, commit_hash, actual_ref, git_ref = self._handle_git_source(
-                source
-            )
+            repo_path, source_path, commit_hash, actual_ref, git_ref = self._handle_git_source(source)
         else:
             repo_path, source_path, commit_hash, actual_ref, git_ref = self._handle_local_source(
                 source, scripts, copy_parent_dir
@@ -124,24 +154,28 @@ class InstallHandler:
         install_directory = install_dir if install_dir else self.config.install_dir
         ensure_dir(install_directory)
 
-        # Install scripts
-        return self._install_scripts(
-            scripts,
-            repo_path,
-            source_path,
-            dependencies,
-            install_directory,
-            is_local,
-            is_git,
-            copy_parent_dir,
-            no_symlink,
-            exact,
-            add_source_package,
-            commit_hash,
-            actual_ref,
-            git_ref,
-            alias,
+        # Create installation context and options
+        context = InstallationContext(
+            repo_path=repo_path,
+            source_path=source_path,
+            is_local=is_local,
+            is_git=is_git,
+            copy_parent_dir=copy_parent_dir,
+            commit_hash=commit_hash,
+            actual_ref=actual_ref,
+            git_ref=git_ref,
         )
+        options = ScriptInstallOptions(
+            dependencies=dependencies,
+            install_directory=install_directory,
+            no_symlink=no_symlink,
+            exact=exact,
+            add_source_package=add_source_package,
+            alias=alias,
+        )
+
+        # Install scripts
+        return self._install_scripts(scripts, context, options)
 
     def _check_existing_scripts(self, scripts: tuple[str, ...], force: bool) -> bool:
         """
@@ -161,16 +195,14 @@ class InstallHandler:
 
         if existing_scripts and not force:
             script_list = ", ".join(existing_scripts)
-            self.console.print(
-                f"[yellow]Warning:[/yellow] Scripts already installed: {script_list}"
-            )
+            self.console.print(f"[yellow]Warning:[/yellow] Scripts already installed: {script_list}")
             if not prompt_confirm("Overwrite existing installations?", default=False):
                 self.console.print("Installation cancelled.")
                 return False
 
         return True
 
-    def _handle_git_source(self, source: str) -> tuple[Path, None, str, str, Any]:
+    def _handle_git_source(self, source: str) -> tuple[Path, None, str, str, GitRef]:
         """
         Handle Git source installation.
 
@@ -184,39 +216,26 @@ class InstallHandler:
         repo_name = get_repo_name_from_url(git_ref.base_url)
         repo_path = self.config.repo_dir / repo_name
 
-        try:
-            verify_git_available()
-        except GitError as e:
-            self.console.print(f"[red]Error:[/red] Git: {e}")
-            raise
+        handle_git_error(self.console, lambda: verify_git_available())
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=self.console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Cloning/updating repository...", total=None)
-
-            try:
-                clone_or_update(
+        with progress_spinner("Cloning/updating repository...", self.console):
+            handle_git_error(
+                self.console,
+                lambda: clone_or_update(
                     git_ref.base_url,
                     git_ref.ref_value,
                     repo_path,
                     depth=self.config.clone_depth,
-                )
-                progress.update(task, completed=True)
-            except GitError as e:
-                self.console.print(f"[red]Error:[/red] Git: {e}")
-                raise
+                ),
+            )
 
         # Get current commit hash and actual branch
-        try:
-            commit_hash = get_current_commit_hash(repo_path)
-            actual_ref = git_ref.ref_value or get_default_branch(repo_path)
-        except GitError as e:
-            self.console.print(f"[red]Error:[/red] Git: Failed to get commit hash: {e}")
-            raise
+        commit_hash = handle_git_error(
+            self.console, lambda: get_current_commit_hash(repo_path), "Failed to get commit hash"
+        )
+        actual_ref = git_ref.ref_value or handle_git_error(
+            self.console, lambda: get_default_branch(repo_path), "Failed to get default branch"
+        )
 
         return repo_path, None, commit_hash, actual_ref, git_ref
 
@@ -268,25 +287,9 @@ class InstallHandler:
             self.console.print(f"[yellow]Warning:[/yellow] Directory already exists: {repo_path}")
             self.console.print("Existing files will be overwritten.")
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=self.console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Copying directory...", total=None)
-
+        with progress_spinner("Copying directory...", self.console):
             ensure_dir(repo_path)
-            for item in source_path.iterdir():
-                dest = repo_path / item.name
-                if item.is_dir():
-                    if dest.exists():
-                        shutil.rmtree(dest)
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
-
-            progress.update(task, completed=True)
+            copy_directory_contents(source_path, repo_path)
 
         return repo_path
 
@@ -341,46 +344,22 @@ class InstallHandler:
     def _install_scripts(
         self,
         scripts: tuple[str, ...],
-        repo_path: Path,
-        source_path: Path | None,
-        dependencies: list[str],
-        install_directory: Path,
-        is_local: bool,
-        is_git: bool,
-        copy_parent_dir: bool,
-        no_symlink: bool,
-        exact: bool | None,
-        add_source_package: str | None,
-        commit_hash: str | None,
-        actual_ref: str | None,
-        git_ref: Any,
-        alias: str | None = None,
+        context: InstallationContext,
+        options: ScriptInstallOptions,
     ) -> list[tuple[str, bool, Path | None | str]]:
-        """
-        Install all requested scripts.
+        """Install all requested scripts.
+
+        Args:
+            scripts: Tuple of script names to install
+            context: Installation source context
+            options: Installation configuration options
 
         Returns:
             List of installation results
         """
         results = []
         for script_name in scripts:
-            result = self._install_single_script(
-                script_name,
-                repo_path,
-                source_path,
-                dependencies,
-                install_directory,
-                is_local,
-                is_git,
-                copy_parent_dir,
-                no_symlink,
-                exact,
-                add_source_package,
-                commit_hash,
-                actual_ref,
-                git_ref,
-                alias,
-            )
+            result = self._install_single_script(script_name, context, options)
             results.append(result)
 
         return results
@@ -388,22 +367,19 @@ class InstallHandler:
     def _install_single_script(
         self,
         script_name: str,
-        repo_path: Path,
-        source_path: Path | None,
-        dependencies: list[str],
-        install_directory: Path,
-        is_local: bool,
-        is_git: bool,
-        copy_parent_dir: bool,
-        no_symlink: bool,
-        exact: bool | None,
-        add_source_package: str | None,
-        commit_hash: str | None,
-        actual_ref: str | None,
-        git_ref: Any,
-        alias: str | None = None,
+        context: InstallationContext,
+        options: ScriptInstallOptions,
     ) -> tuple[str, bool, Path | None | str]:
-        """Install a single script."""
+        """Install a single script.
+
+        Args:
+            script_name: Name of the script to install
+            context: Installation source context
+            options: Installation configuration options
+
+        Returns:
+            Tuple of (script_name, success, symlink_path_or_error)
+        """
         # Validate script_name to prevent path traversal
         try:
             validate_filepath(script_name, platform="auto")
@@ -412,83 +388,71 @@ class InstallHandler:
             return (script_name, False, f"Invalid script name: {e}")
 
         # For local sources without copy-parent-dir, copy script from source
-        if is_local and not copy_parent_dir:
-            assert source_path is not None
-            source_script = source_path / script_name
+        if context.is_local and not context.copy_parent_dir:
+            assert context.source_path is not None
+            source_script = context.source_path / script_name
             if not source_script.exists():
-                self.console.print(
-                    f"[red]Error:[/red] Script '{script_name}' not found at: {source_script}"
-                )
+                self.console.print(f"[red]Error:[/red] Script '{script_name}' not found at: {source_script}")
                 return (script_name, False, "Not found")
 
             # Copy to repo_path
-            dest_script = repo_path / script_name
+            dest_script = context.repo_path / script_name
             dest_script.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_script, dest_script)
             script_path = dest_script
         else:
-            script_path = repo_path / script_name
+            script_path = context.repo_path / script_name
 
         # Check if script exists
         if not script_path.exists():
-            self.console.print(
-                f"[red]Error:[/red] Script '{script_name}' not found at: {script_path}"
-            )
+            self.console.print(f"[red]Error:[/red] Script '{script_name}' not found at: {script_path}")
             return (script_name, False, "Not found")
 
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=self.console,
-                transient=True,
-            ) as progress:
-                task = progress.add_task(f"Installing {script_name}...", total=None)
-
+            with progress_spinner(f"Installing {script_name}...", self.console):
                 # Add source package if requested
-                if add_source_package is not None:
-                    pkg_name = add_source_package if add_source_package else repo_path.name
-                    add_package_source(script_path, pkg_name, repo_path)
-                    if pkg_name not in dependencies:
-                        dependencies.append(pkg_name)
+                if options.add_source_package is not None:
+                    pkg_name = (
+                        options.add_source_package if options.add_source_package else context.repo_path.name
+                    )
+                    add_package_source(script_path, pkg_name, context.repo_path)
+                    if pkg_name not in options.dependencies:
+                        options.dependencies.append(pkg_name)
 
-                symlink_path = install_script(
-                    script_path,
-                    dependencies,
-                    install_directory,
+                install_config = InstallConfig(
+                    install_dir=options.install_directory,
                     auto_chmod=self.config.auto_chmod,
-                    auto_symlink=not no_symlink and self.config.auto_symlink,
+                    auto_symlink=not options.no_symlink and self.config.auto_symlink,
                     verify_after_install=self.config.verify_after_install,
-                    use_exact=exact if exact is not None else self.config.use_exact_flag,
-                    script_alias=alias,
+                    use_exact=options.exact if options.exact is not None else self.config.use_exact_flag,
+                    script_alias=options.alias,
                 )
-
-                progress.update(task, completed=True)
+                symlink_path = install_script(script_path, options.dependencies, install_config)
 
             # Save to state
-            if is_git:
-                assert git_ref is not None
+            if context.is_git:
+                assert context.git_ref is not None
                 script_info = ScriptInfo(
                     name=script_name,
                     source_type=SourceType.GIT,
-                    source_url=git_ref.base_url,
-                    ref=actual_ref,
+                    source_url=context.git_ref.base_url,
+                    ref=context.actual_ref,
                     installed_at=datetime.now(),
-                    repo_path=repo_path,
+                    repo_path=context.repo_path,
                     symlink_path=symlink_path,
-                    dependencies=dependencies,
-                    commit_hash=commit_hash,
+                    dependencies=options.dependencies,
+                    commit_hash=context.commit_hash,
                 )
             else:
                 script_info = ScriptInfo(
                     name=script_name,
                     source_type=SourceType.LOCAL,
                     installed_at=datetime.now(),
-                    repo_path=repo_path,
+                    repo_path=context.repo_path,
                     symlink_path=symlink_path,
-                    dependencies=dependencies,
-                    source_path=source_path,
-                    copy_parent_dir=copy_parent_dir,
+                    dependencies=options.dependencies,
+                    source_path=context.source_path,
+                    copy_parent_dir=context.copy_parent_dir,
                 )
             self.state_manager.add_script(script_info)
 

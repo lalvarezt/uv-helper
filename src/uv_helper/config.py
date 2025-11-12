@@ -1,14 +1,16 @@
 """Configuration management for UV-Helper."""
 
+import logging
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
 
 import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .utils import ensure_dir, expand_path
+
+logger = logging.getLogger(__name__)
 
 
 class Config(BaseModel):
@@ -31,7 +33,7 @@ class Config(BaseModel):
 
     @field_validator("repo_dir", "install_dir", "state_file", mode="before")
     @classmethod
-    def expand_paths(cls, v: Any) -> Path:
+    def expand_paths(cls, v: str | Path) -> Path:
         """Expand path strings with ~ and environment variables."""
         if isinstance(v, str):
             return expand_path(v)
@@ -126,9 +128,7 @@ def load_config(config_path: Path | None = None) -> Config:
         flat_data = {
             "repo_dir": data.get("paths", {}).get("repo_dir", "~/.local/share/uv-helper"),
             "install_dir": data.get("paths", {}).get("install_dir", "~/.local/bin"),
-            "state_file": data.get("paths", {}).get(
-                "state_file", "~/.local/share/uv-helper/state.json"
-            ),
+            "state_file": data.get("paths", {}).get("state_file", "~/.local/share/uv-helper/state.json"),
             "clone_depth": data.get("git", {}).get("clone_depth", 1),
             "auto_symlink": data.get("install", {}).get("auto_symlink", True),
             "verify_after_install": data.get("install", {}).get("verify_after_install", True),
@@ -144,9 +144,9 @@ def load_config(config_path: Path | None = None) -> Config:
     # Save default config for future use
     try:
         config.save(config_path)
-    except (OSError, PermissionError):
+    except (OSError, PermissionError) as e:
         # Don't fail if we can't save (e.g., read-only filesystem, permissions)
         # Just use in-memory config
-        pass
+        logger.warning(f"Could not save default config to {config_path}: {e}")
 
     return config

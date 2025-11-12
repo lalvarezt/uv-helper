@@ -36,11 +36,16 @@ class ScriptInfo(BaseModel):
     source_path: Path | None = None  # Original source path for updates
     copy_parent_dir: bool = False  # Whether entire parent directory was copied
 
+    @property
+    def display_name(self) -> str:
+        """Get display name (symlink name if exists, otherwise script name)."""
+        return self.symlink_path.name if self.symlink_path else self.name
+
 
 class StateManager:
     """Manages state using TinyDB for automatic atomic updates and query support."""
 
-    def __init__(self, state_file: Path):
+    def __init__(self, state_file: Path) -> None:
         """
         Initialize state manager with TinyDB.
 
@@ -89,6 +94,25 @@ class StateManager:
         """
         return self.get_script(name) is not None
 
+    def get_script_flexible(self, name: str) -> ScriptInfo | None:
+        """
+        Get script by name or symlink name.
+
+        Tries to find script first by name, then by symlink name (alias).
+
+        Args:
+            name: Script name or symlink name
+
+        Returns:
+            ScriptInfo if found, None otherwise
+        """
+        # Try by name first
+        script = self.get_script(name)
+        if script:
+            return script
+        # Try by symlink
+        return self.get_script_by_symlink(name)
+
     def list_scripts(self) -> list[ScriptInfo]:
         """List all installed scripts."""
         results = self.scripts.all()
@@ -118,9 +142,9 @@ class StateManager:
         Returns:
             ScriptInfo if found, None otherwise
         """
-        # Search through all scripts and match by symlink name
-        all_scripts = self.list_scripts()
-        for script in all_scripts:
-            if script.symlink_path and script.symlink_path.name == symlink_name:
-                return script
-        return None
+        # Use TinyDB query with custom test for better performance
+        Script = Query()
+        results = self.scripts.search(
+            Script.symlink_path.test(lambda path: path is not None and Path(path).name == symlink_name)
+        )
+        return ScriptInfo.model_validate(results[0]) if results else None

@@ -1,6 +1,7 @@
 """Script installation and processing for UV-Helper."""
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from pathvalidate import ValidationError, validate_filename
@@ -34,6 +35,22 @@ class ScriptInstallerError(Exception):
     """
 
     pass
+
+
+@dataclass
+class InstallConfig:
+    """Configuration for script installation.
+
+    Groups installation-related parameters to reduce parameter count in install_script().
+    All fields have sensible defaults matching current behavior.
+    """
+
+    install_dir: Path
+    auto_chmod: bool = True
+    auto_symlink: bool = True
+    verify_after_install: bool = True
+    use_exact: bool = True
+    script_alias: str | None = None
 
 
 def process_script_dependencies(script_path: Path, dependencies: list[str]) -> bool:
@@ -304,8 +321,11 @@ def verify_script(script_path: Path) -> bool:
             timeout=SCRIPT_VERIFICATION_TIMEOUT,
         )
         return result.returncode == 0
-    except Exception:
-        # Includes TimeoutExpired, CalledProcessError, etc.
+    except subprocess.TimeoutExpired:
+        # Script timed out
+        return False
+    except (subprocess.CalledProcessError, OSError, FileNotFoundError):
+        # Script failed to run or doesn't exist
         return False
 
 
@@ -376,12 +396,7 @@ def verify_uv_available() -> bool:
 def install_script(
     script_path: Path,
     dependencies: list[str],
-    install_dir: Path,
-    auto_chmod: bool = True,
-    auto_symlink: bool = True,
-    verify_after_install: bool = True,
-    use_exact: bool = True,
-    script_alias: str | None = None,
+    config: InstallConfig,
 ) -> Path | None:
     """
     Install a script with all processing steps.
@@ -397,12 +412,7 @@ def install_script(
     Args:
         script_path: Path to script file
         dependencies: List of dependencies
-        install_dir: Installation directory for symlinks
-        auto_chmod: Whether to make script executable
-        auto_symlink: Whether to create symlink
-        verify_after_install: Whether to verify after installation
-        use_exact: Whether to use --exact flag in shebang for precise dependency management
-        script_alias: Custom name for the symlink (default: script filename)
+        config: Installation configuration (install_dir, flags, etc.)
 
     Returns:
         Path to symlink if created, None otherwise
@@ -419,19 +429,19 @@ def install_script(
         process_script_dependencies(script_path, dependencies)
 
     # Modify shebang
-    modify_shebang(script_path, use_exact=use_exact)
+    modify_shebang(script_path, use_exact=config.use_exact)
 
     # Make executable
-    if auto_chmod:
+    if config.auto_chmod:
         make_executable(script_path)
 
     # Create symlink
     symlink_path = None
-    if auto_symlink:
-        symlink_path = create_symlink(script_path, install_dir, script_alias)
+    if config.auto_symlink:
+        symlink_path = create_symlink(script_path, config.install_dir, config.script_alias)
 
     # Verify
-    if verify_after_install:
+    if config.verify_after_install:
         if not verify_script(script_path):
             # Don't fail, just warn (script might not support --help)
             pass

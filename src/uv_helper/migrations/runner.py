@@ -16,7 +16,7 @@ console = Console()
 class MigrationRunner:
     """Runs database migrations."""
 
-    def __init__(self, db: TinyDB, db_path: Path):
+    def __init__(self, db: TinyDB, db_path: Path) -> None:
         """
         Initialize migration runner.
 
@@ -52,9 +52,7 @@ class MigrationRunner:
         """
         # Use update if doc exists, otherwise insert
         if self.metadata.get(doc_id=DB_METADATA_DOC_ID):
-            self.metadata.update(
-                {METADATA_KEY_SCHEMA_VERSION: version}, doc_ids=[DB_METADATA_DOC_ID]
-            )
+            self.metadata.update({METADATA_KEY_SCHEMA_VERSION: version}, doc_ids=[DB_METADATA_DOC_ID])
         else:
             self.metadata.insert({METADATA_KEY_SCHEMA_VERSION: version})
 
@@ -78,9 +76,7 @@ class MigrationRunner:
         try:
             # Create backup filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = (
-                self.db_path.parent / f"{self.db_path.stem}_backup_{timestamp}{self.db_path.suffix}"
-            )
+            backup_path = self.db_path.parent / f"{self.db_path.stem}_backup_{timestamp}{self.db_path.suffix}"
 
             # Create backup
             shutil.copy2(self.db_path, backup_path)
@@ -106,9 +102,7 @@ class MigrationRunner:
             # Already at latest version
             return
 
-        console.print(
-            f"Running database migrations (v{current_version} -> v{CURRENT_SCHEMA_VERSION})..."
-        )
+        console.print(f"Running database migrations (v{current_version} -> v{CURRENT_SCHEMA_VERSION})...")
 
         # Create backup before migrations
         backup_path = self.backup_database()
@@ -117,9 +111,7 @@ class MigrationRunner:
         for migration in migrations:
             if migration.version > current_version:
                 try:
-                    console.print(
-                        f"  Applying migration {migration.version}: {migration.description()}"
-                    )
+                    console.print(f"  Applying migration {migration.version}: {migration.description()}")
                     migration.migrate(self.db)
                     self.set_schema_version(migration.version)
                 except Exception as e:

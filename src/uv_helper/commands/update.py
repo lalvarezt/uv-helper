@@ -6,6 +6,7 @@ from rich.console import Console
 
 from ..config import Config
 from ..constants import SourceType
+from ..deps import resolve_dependencies
 from ..git_manager import (
     GitError,
     clone_or_update,
@@ -33,7 +34,9 @@ class UpdateHandler:
         self.console = console
         self.state_manager = StateManager(config.state_file)
 
-    def update(self, script_name: str, force: bool, exact: bool | None) -> tuple[str, str]:
+    def update(
+        self, script_name: str, force: bool, exact: bool | None, refresh_deps: bool = False
+    ) -> tuple[str, str]:
         """
         Update a single script.
 
@@ -41,6 +44,7 @@ class UpdateHandler:
             script_name: Name of script to update (can be original name or alias)
             force: Force reinstall even if up-to-date
             exact: Use --exact flag in shebang
+            refresh_deps: Re-resolve dependencies from repository
 
         Returns:
             Tuple of (script_name, status)
@@ -55,17 +59,20 @@ class UpdateHandler:
 
         # Branch based on source type (use actual script name from state, not user input)
         if script_info.source_type == SourceType.LOCAL:
-            return self._update_local_script(script_info, script_info.name, exact)
+            return self._update_local_script(script_info, script_info.name, exact, refresh_deps)
         else:
-            return self._update_git_script(script_info, display_name, force, exact)
+            return self._update_git_script(script_info, display_name, force, exact, refresh_deps)
 
-    def update_all(self, force: bool, exact: bool | None) -> list[tuple[str, str]]:
+    def update_all(
+        self, force: bool, exact: bool | None, refresh_deps: bool = False
+    ) -> list[tuple[str, str]]:
         """
         Update all installed scripts.
 
         Args:
             force: Force reinstall all scripts
             exact: Use --exact flag in shebang
+            refresh_deps: Re-resolve dependencies from repository
 
         Returns:
             List of (script_name, status) tuples
@@ -95,7 +102,7 @@ class UpdateHandler:
                 git_checked = True
 
             try:
-                status = self._update_git_script_internal(script_info, force, exact)
+                status = self._update_git_script_internal(script_info, force, exact, refresh_deps)
                 results.append((display_name, status))
             except (GitError, ScriptInstallerError) as e:
                 results.append((display_name, f"Error: {e}"))
@@ -103,7 +110,7 @@ class UpdateHandler:
         return results
 
     def _update_local_script(
-        self, script_info: ScriptInfo, script_name: str, exact: bool | None
+        self, script_info: ScriptInfo, script_name: str, exact: bool | None, refresh_deps: bool = False
     ) -> tuple[str, str]:
         """Update a local script."""
         if not script_info.source_path or not script_info.source_path.exists():
@@ -126,6 +133,15 @@ class UpdateHandler:
                     dest_script.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(source_script, dest_script)
 
+            # Resolve dependencies
+            dependencies = script_info.dependencies
+            if refresh_deps:
+                dependencies = resolve_dependencies(None, script_info.repo_path, script_info.source_path)
+                if dependencies != script_info.dependencies:
+                    self.console.print(
+                        f"[cyan]Dependencies refreshed:[/cyan] {', '.join(dependencies) or 'none'}"
+                    )
+
             # Reinstall script (preserve alias if it exists)
             script_path = script_info.repo_path / script_name
             # Extract alias from existing symlink if it differs from original name
@@ -143,11 +159,12 @@ class UpdateHandler:
             )
             symlink_path = install_script(
                 script_path,
-                script_info.dependencies,
+                dependencies,
                 install_config,
             )
 
             # Update state
+            script_info.dependencies = dependencies
             script_info.installed_at = datetime.now()
             script_info.symlink_path = symlink_path
             self.state_manager.add_script(script_info)
@@ -158,7 +175,12 @@ class UpdateHandler:
             return (script_info.display_name, f"Error: {e}")
 
     def _update_git_script(
-        self, script_info: ScriptInfo, script_name: str, force: bool, exact: bool | None
+        self,
+        script_info: ScriptInfo,
+        script_name: str,
+        force: bool,
+        exact: bool | None,
+        refresh_deps: bool = False,
     ) -> tuple[str, str]:
         """Update a Git script."""
         assert script_info.source_url is not None
@@ -168,12 +190,14 @@ class UpdateHandler:
         display_name = script_info.display_name
 
         try:
-            status = self._update_git_script_internal(script_info, force, exact)
+            status = self._update_git_script_internal(script_info, force, exact, refresh_deps)
             return (display_name, status)
         except (GitError, ScriptInstallerError) as e:
             return (display_name, f"Error: {e}")
 
-    def _update_git_script_internal(self, script_info: ScriptInfo, force: bool, exact: bool | None) -> str:
+    def _update_git_script_internal(
+        self, script_info: ScriptInfo, force: bool, exact: bool | None, refresh_deps: bool = False
+    ) -> str:
         """Internal method to update a Git script."""
         assert script_info.source_url is not None
         assert script_info.ref is not None
@@ -195,12 +219,21 @@ class UpdateHandler:
         except GitError:
             actual_branch = script_info.ref
 
-        if new_commit_hash == script_info.commit_hash and not force:
+        if new_commit_hash == script_info.commit_hash and not force and not refresh_deps:
             # Still update the ref in state if it changed
             if actual_branch != script_info.ref:
                 script_info.ref = actual_branch
                 self.state_manager.add_script(script_info)
             return "up-to-date"
+
+        # Resolve dependencies
+        dependencies = script_info.dependencies
+        if refresh_deps:
+            dependencies = resolve_dependencies(None, script_info.repo_path)
+            if dependencies != script_info.dependencies:
+                self.console.print(
+                    f"[cyan]Dependencies refreshed:[/cyan] {', '.join(dependencies) or 'none'}"
+                )
 
         # Reinstall script (preserve alias if it exists)
         script_path = script_info.repo_path / script_info.name
@@ -219,11 +252,12 @@ class UpdateHandler:
         )
         symlink_path = install_script(
             script_path,
-            script_info.dependencies,
+            dependencies,
             install_config,
         )
 
         # Update state with new commit hash and actual branch
+        script_info.dependencies = dependencies
         script_info.commit_hash = new_commit_hash
         script_info.ref = actual_branch
         script_info.installed_at = datetime.now()

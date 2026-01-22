@@ -374,8 +374,13 @@ def remove(
     default=None,
     help="Use --exact flag in shebang for precise dependency management (default: from config)",
 )
+@click.option(
+    "--refresh-deps",
+    is_flag=True,
+    help="Re-resolve dependencies from repository (reads requirements.txt again)",
+)
 @click.pass_context
-def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None) -> None:
+def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None, refresh_deps: bool) -> None:
     """
     Update an installed script to the latest version from its repository.
 
@@ -392,12 +397,16 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
         \b
         # Force reinstall even if already up-to-date
         uv-helper update myscript --force
+
+        \b
+        # Update and re-resolve dependencies from requirements.txt
+        uv-helper update myscript --refresh-deps
     """
     config = ctx.obj["config"]
     handler = UpdateHandler(config, console)
 
     try:
-        result = handler.update(script_name, force, exact)
+        result = handler.update(script_name, force, exact, refresh_deps)
         display_update_results([result], console)
     except (ValueError, FileNotFoundError, ScriptInstallerError):
         sys.exit(1)
@@ -410,8 +419,13 @@ def update(ctx: click.Context, script_name: str, force: bool, exact: bool | None
     default=None,
     help="Use --exact flag in shebang for precise dependency management (default: from config)",
 )
+@click.option(
+    "--refresh-deps",
+    is_flag=True,
+    help="Re-resolve dependencies from repository (reads requirements.txt again)",
+)
 @click.pass_context
-def update_all(ctx: click.Context, force: bool, exact: bool | None) -> None:
+def update_all(ctx: click.Context, force: bool, exact: bool | None, refresh_deps: bool) -> None:
     """
     Update all installed scripts to their latest versions.
 
@@ -428,12 +442,16 @@ def update_all(ctx: click.Context, force: bool, exact: bool | None) -> None:
         \b
         # Force reinstall all scripts
         uv-helper update-all --force
+
+        \b
+        # Update all and re-resolve dependencies from requirements.txt
+        uv-helper update-all --refresh-deps
     """
     config = ctx.obj["config"]
     handler = UpdateHandler(config, console)
 
     try:
-        results = handler.update_all(force, exact)
+        results = handler.update_all(force, exact, refresh_deps)
         if results:
             display_update_results(results, console)
     except ScriptInstallerError:

@@ -1,5 +1,6 @@
 """CLI interface for UV-Helper."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -13,11 +14,12 @@ if sys.version_info < (3, 11):
     sys.exit(1)
 
 import click
+from click.shell_completion import CompletionItem
 from rich.console import Console
 
 from . import __version__
 from .commands import InstallHandler, InstallRequest, RemoveHandler, UpdateHandler
-from .config import load_config
+from .config import create_default_config, get_config_path, load_config
 from .display import (
     display_install_results,
     display_script_details,
@@ -28,6 +30,46 @@ from .script_installer import ScriptInstallerError, verify_uv_available
 from .state import StateManager
 
 console = Console()
+
+
+def complete_script_names(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Provide completion for installed script names."""
+    try:
+        # Try to get config from context, or load it directly
+        if ctx.obj and "config" in ctx.obj:
+            config = ctx.obj["config"]
+        else:
+            config_path = get_config_path()
+            if config_path.exists():
+                config = load_config(config_path)
+            else:
+                config = create_default_config()
+
+        state_manager = StateManager(config.state_file)
+        scripts = state_manager.list_scripts()
+
+        completions = []
+        seen_names: set[str] = set()
+
+        for script in scripts:
+            # Add the original script name
+            if script.name.startswith(incomplete) and script.name not in seen_names:
+                seen_names.add(script.name)
+                completions.append(CompletionItem(script.name, help=script.source_url or "local"))
+
+            # Add alias if different from name
+            if script.symlink_path:
+                alias = script.symlink_path.name
+                if alias != script.name and alias.startswith(incomplete) and alias not in seen_names:
+                    seen_names.add(alias)
+                    completions.append(CompletionItem(alias, help=f"alias for {script.name}"))
+
+        return completions
+    except Exception:
+        # Silently fail on any error during completion
+        return []
 
 
 @click.group()
@@ -305,7 +347,7 @@ def list_scripts(ctx: click.Context, verbose: bool, tree: bool) -> None:
 
 
 @cli.command()
-@click.argument("script-name")
+@click.argument("script-name", shell_complete=complete_script_names)
 @click.pass_context
 def show(ctx: click.Context, script_name: str) -> None:
     """
@@ -337,7 +379,7 @@ def show(ctx: click.Context, script_name: str) -> None:
 
 
 @cli.command()
-@click.argument("script-name")
+@click.argument("script-name", shell_complete=complete_script_names)
 @click.option("--clean-repo", "-c", is_flag=True, help="Remove repository if no other scripts use it")
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
@@ -378,7 +420,7 @@ def remove(
 
 
 @cli.command()
-@click.argument("script-name")
+@click.argument("script-name", shell_complete=complete_script_names)
 @click.option("--force", "-f", is_flag=True, help="Force reinstall even if up-to-date")
 @click.option(
     "--exact/--no-exact",
@@ -969,6 +1011,49 @@ def doctor(ctx: click.Context, repair: bool) -> None:
             console.print("\n[dim]Run 'uv-helper doctor --repair' to fix these issues[/dim]")
 
     console.print()
+
+
+@cli.command("completion")
+@click.argument("shell", type=click.Choice(["fish", "bash", "zsh"]))
+def completion(shell: str) -> None:
+    """
+    Generate shell completion script.
+
+    Outputs a completion script for the specified shell. Save this to the
+    appropriate location for your shell to enable tab completion.
+
+    Examples:
+
+        \b
+        # Fish shell
+        uv-helper completion fish > ~/.config/fish/completions/uv-helper.fish
+
+        \b
+        # Bash shell
+        uv-helper completion bash > ~/.local/share/bash-completion/completions/uv-helper
+
+        \b
+        # Zsh shell
+        uv-helper completion zsh > ~/.zfunc/_uv-helper
+        # Then add: fpath+=~/.zfunc && autoload -Uz compinit && compinit
+    """
+    import subprocess
+
+    # Use click's built-in completion generation
+    env_var = "_UV_HELPER_COMPLETE"
+    shell_map = {
+        "fish": "fish_source",
+        "bash": "bash_source",
+        "zsh": "zsh_source",
+    }
+
+    result = subprocess.run(
+        ["uv-helper"],
+        env={**dict(os.environ), env_var: shell_map[shell]},
+        capture_output=True,
+        text=True,
+    )
+    console.print(result.stdout, end="")
 
 
 if __name__ == "__main__":

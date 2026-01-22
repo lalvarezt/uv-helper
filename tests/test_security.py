@@ -63,7 +63,7 @@ class TestTOCTOUProtection:
         existing.write_text("existing", encoding="utf-8")
 
         # Should remove existing and create symlink
-        symlink = create_symlink(script_path, target_dir)
+        symlink, _warning = create_symlink(script_path, target_dir)
         assert symlink.is_symlink()
         assert symlink.resolve() == script_path
 
@@ -81,7 +81,7 @@ class TestTOCTOUProtection:
         existing_symlink.symlink_to(old_script)
 
         # Should replace with new symlink
-        new_symlink = create_symlink(script_path, target_dir)
+        new_symlink, _warning = create_symlink(script_path, target_dir)
         assert new_symlink.is_symlink()
         assert new_symlink.resolve() == script_path
         assert new_symlink.resolve() != old_script

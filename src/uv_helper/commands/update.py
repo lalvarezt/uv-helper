@@ -157,11 +157,15 @@ class UpdateHandler:
                 use_exact=exact if exact is not None else self.config.use_exact_flag,
                 script_alias=script_alias,
             )
-            symlink_path = install_script(
+            symlink_path, shadow_warning = install_script(
                 script_path,
                 dependencies,
                 install_config,
             )
+
+            # Show shadow warning if any
+            if shadow_warning:
+                self.console.print(f"[yellow]Warning:[/yellow] {shadow_warning}")
 
             # Update state
             script_info.dependencies = dependencies
@@ -250,11 +254,15 @@ class UpdateHandler:
             use_exact=exact if exact is not None else self.config.use_exact_flag,
             script_alias=script_alias,
         )
-        symlink_path = install_script(
+        symlink_path, shadow_warning = install_script(
             script_path,
             dependencies,
             install_config,
         )
+
+        # Show shadow warning if any
+        if shadow_warning:
+            self.console.print(f"[yellow]Warning:[/yellow] {shadow_warning}")
 
         # Update state with new commit hash and actual branch
         script_info.dependencies = dependencies

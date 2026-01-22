@@ -83,7 +83,7 @@ def test_install_script_sets_permissions_and_symlink(tmp_path: Path, monkeypatch
         verify_after_install=True,
         use_exact=True,
     )
-    symlink_path = script_installer.install_script(
+    symlink_path, shadow_warning = script_installer.install_script(
         script_path,
         ["requests"],
         install_config,
@@ -95,6 +95,7 @@ def test_install_script_sets_permissions_and_symlink(tmp_path: Path, monkeypatch
     assert symlink_path.exists()
     assert symlink_path.is_symlink()
     assert symlink_path.resolve() == script_path
+    assert shadow_warning is None  # No system command should be shadowed
 
     first_line = script_path.read_text(encoding="utf-8").splitlines()[0]
     assert first_line == "#!/usr/bin/env -S uv run --exact --script"

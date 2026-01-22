@@ -410,6 +410,9 @@ class InstallHandler:
             self.console.print(f"[red]Error:[/red] Script '{script_name}' not found at: {script_path}")
             return (script_name, False, "Not found")
 
+        # Track dependencies for state and for uv add --script
+        all_deps = list(options.dependencies)
+
         try:
             with progress_spinner(f"Installing {script_name}...", self.console):
                 # Add source package if requested
@@ -418,8 +421,8 @@ class InstallHandler:
                         options.add_source_package if options.add_source_package else context.repo_path.name
                     )
                     add_package_source(script_path, pkg_name, context.repo_path)
-                    if pkg_name not in options.dependencies:
-                        options.dependencies.append(pkg_name)
+                    if pkg_name not in all_deps:
+                        all_deps.append(pkg_name)
 
                 install_config = InstallConfig(
                     install_dir=options.install_directory,
@@ -429,9 +432,12 @@ class InstallHandler:
                     use_exact=options.exact if options.exact is not None else self.config.use_exact_flag,
                     script_alias=options.alias,
                 )
-                symlink_path = install_script(script_path, options.dependencies, install_config)
+                symlink_path, shadow_warning = install_script(script_path, all_deps, install_config)
 
-            # Save to state
+            # Show shadow warning if any
+            if shadow_warning:
+                self.console.print(f"[yellow]Warning:[/yellow] {shadow_warning}")
+
             if context.is_git:
                 assert context.git_ref is not None
                 script_info = ScriptInfo(
@@ -442,7 +448,7 @@ class InstallHandler:
                     installed_at=datetime.now(),
                     repo_path=context.repo_path,
                     symlink_path=symlink_path,
-                    dependencies=options.dependencies,
+                    dependencies=all_deps,
                     commit_hash=context.commit_hash,
                 )
             else:
@@ -452,7 +458,7 @@ class InstallHandler:
                     installed_at=datetime.now(),
                     repo_path=context.repo_path,
                     symlink_path=symlink_path,
-                    dependencies=options.dependencies,
+                    dependencies=all_deps,
                     source_path=context.source_path,
                     copy_parent_dir=context.copy_parent_dir,
                 )

@@ -1,5 +1,6 @@
 """Script installation and processing for UV-Helper."""
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,11 +221,36 @@ def add_package_source(script_path: Path, package_name: str, package_path: Path)
         raise ScriptInstallerError(f"Failed to add package source: {e}") from e
 
 
+def check_shadows_system_command(name: str, target_dir: Path) -> str | None:
+    """
+    Check if a symlink name would shadow a system command.
+
+    Args:
+        name: The symlink name to check
+        target_dir: The directory where the symlink will be created
+
+    Returns:
+        Path to existing system command if shadowing would occur, None otherwise
+    """
+    # First check if there's already a command with this name
+    existing_path = shutil.which(name)
+    if existing_path is None:
+        return None
+
+    # Don't warn if the existing command is in our target directory
+    # (would be a previous installation we're overwriting)
+    existing = Path(existing_path)
+    if existing.parent == target_dir:
+        return None
+
+    return existing_path
+
+
 def create_symlink(
     script_path: Path,
     target_dir: Path,
     script_name: str | None = None,
-) -> Path:
+) -> tuple[Path, str | None]:
     """
     Create symlink to script in target directory.
 
@@ -234,7 +260,7 @@ def create_symlink(
         script_name: Optional custom name for symlink (default: script filename)
 
     Returns:
-        Path to created symlink
+        Tuple of (path to created symlink, warning message if shadowing system command)
 
     Raises:
         ScriptInstallerError: If symlink creation fails
@@ -253,6 +279,12 @@ def create_symlink(
         except ValidationError as e:
             raise ScriptInstallerError(f"Invalid symlink name '{script_name}': {e}") from e
 
+        # Check for system command shadowing
+        shadow_warning = None
+        shadowed_path = check_shadows_system_command(script_name, target_dir)
+        if shadowed_path:
+            shadow_warning = f"'{script_name}' shadows existing command at {shadowed_path}"
+
         symlink_path = target_dir / script_name
 
         # Fix TOCTOU race condition: Remove any existing file/symlink atomically
@@ -263,7 +295,7 @@ def create_symlink(
             try:
                 # Attempt atomic symlink creation
                 symlink_path.symlink_to(script_path)
-                return symlink_path
+                return symlink_path, shadow_warning
             except FileExistsError:
                 # Something exists at this path - remove it and retry
                 try:
@@ -405,7 +437,7 @@ def install_script(
     script_path: Path,
     dependencies: list[str],
     config: InstallConfig,
-) -> Path | None:
+) -> tuple[Path | None, str | None]:
     """
     Install a script with all processing steps.
 
@@ -423,7 +455,7 @@ def install_script(
         config: Installation configuration (install_dir, flags, etc.)
 
     Returns:
-        Path to symlink if created, None otherwise
+        Tuple of (path to symlink if created, warning message if any)
 
     Raises:
         ScriptInstallerError: If installation fails
@@ -445,8 +477,9 @@ def install_script(
 
     # Create symlink
     symlink_path = None
+    shadow_warning = None
     if config.auto_symlink:
-        symlink_path = create_symlink(script_path, config.install_dir, config.script_alias)
+        symlink_path, shadow_warning = create_symlink(script_path, config.install_dir, config.script_alias)
 
     # Verify
     if config.verify_after_install:
@@ -454,4 +487,4 @@ def install_script(
             # Don't fail, just warn (script might not support --help)
             pass
 
-    return symlink_path
+    return symlink_path, shadow_warning

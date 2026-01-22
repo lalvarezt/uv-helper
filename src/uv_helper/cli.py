@@ -655,6 +655,134 @@ def import_scripts(ctx: click.Context, file: Path, force: bool, dry_run: bool) -
     display_install_results(results, config.install_dir, console)
 
 
+@cli.command("browse")
+@click.argument("git-url")
+@click.option(
+    "--all", "show_all", is_flag=True, help="Show all .py files including __init__.py, setup.py, etc."
+)
+@click.pass_context
+def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
+    """
+    Browse available Python scripts in a Git repository.
+
+    Clones the repository temporarily and lists all Python files that can
+    be installed. By default, excludes common non-script files like
+    __init__.py, setup.py, conftest.py, etc.
+
+    Examples:
+
+        \b
+        # Browse scripts in a repository
+        uv-helper browse https://github.com/user/repo
+
+        \b
+        # Browse a specific branch
+        uv-helper browse https://github.com/user/repo#develop
+
+        \b
+        # Show all .py files including __init__.py, setup.py
+        uv-helper browse https://github.com/user/repo --all
+    """
+    import shutil
+    import tempfile
+
+    from rich.tree import Tree
+
+    from .git_manager import GitError, clone_repository, parse_git_url
+
+    # Files to exclude by default (common non-script files)
+    EXCLUDED_FILES = {
+        "__init__.py",
+        "__main__.py",
+        "setup.py",
+        "conftest.py",
+        "noxfile.py",
+        "fabfile.py",
+    }
+    EXCLUDED_PREFIXES = ("test_", "_")
+    EXCLUDED_SUFFIXES = ("_test.py",)
+
+    parsed = parse_git_url(git_url)
+
+    console.print(f"Browsing [cyan]{parsed.base_url}[/cyan]", end="")
+    if parsed.ref_value:
+        console.print(f" @ [yellow]{parsed.ref_value}[/yellow]")
+    else:
+        console.print()
+
+    # Clone to temp directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir) / "repo"
+
+        try:
+            console.print("[dim]Cloning repository...[/dim]")
+            clone_repository(
+                parsed.base_url,
+                temp_path,
+                depth=1,
+                ref=parsed.ref_value,
+            )
+        except GitError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
+
+        # Find all .py files
+        py_files: list[Path] = []
+        for py_file in temp_path.rglob("*.py"):
+            # Skip hidden directories and common non-source directories
+            parts = py_file.relative_to(temp_path).parts
+            if any(part.startswith(".") for part in parts):
+                continue
+            if any(part in {"__pycache__", "venv", ".venv", "node_modules"} for part in parts):
+                continue
+
+            if not show_all:
+                # Apply exclusion filters
+                if py_file.name in EXCLUDED_FILES:
+                    continue
+                if py_file.name.startswith(EXCLUDED_PREFIXES):
+                    continue
+                if py_file.name.endswith(EXCLUDED_SUFFIXES):
+                    continue
+
+            py_files.append(py_file.relative_to(temp_path))
+
+        if not py_files:
+            console.print("\n[yellow]No Python scripts found.[/yellow]")
+            if not show_all:
+                console.print("[dim]Try --all to include __init__.py, setup.py, test files, etc.[/dim]")
+            return
+
+        # Group files by directory
+        files_by_dir: dict[Path, list[Path]] = {}
+        for py_file in sorted(py_files):
+            parent = py_file.parent
+            if parent not in files_by_dir:
+                files_by_dir[parent] = []
+            files_by_dir[parent].append(py_file)
+
+        # Display as tree
+        console.print()
+        tree = Tree(f"[bold]{parsed.base_url.split('/')[-1]}[/bold]")
+
+        for directory in sorted(files_by_dir.keys()):
+            if directory == Path("."):
+                dir_node = tree
+            else:
+                dir_node = tree.add(f"[blue]{directory}[/blue]")
+
+            for py_file in files_by_dir[directory]:
+                dir_node.add(f"[cyan]{py_file.name}[/cyan]")
+
+        console.print(tree)
+        console.print(f"\n[dim]{len(py_files)} script(s) found[/dim]")
+
+        # Show install hint
+        if py_files:
+            example_script = py_files[0]
+            console.print(f"\n[dim]Install with: uv-helper install {git_url} -s {example_script}[/dim]")
+
+
 @cli.command("doctor")
 @click.option("--repair", is_flag=True, help="Automatically repair state issues")
 @click.pass_context

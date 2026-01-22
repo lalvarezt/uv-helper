@@ -685,7 +685,6 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
         # Show all .py files including __init__.py, setup.py
         uv-helper browse https://github.com/user/repo --all
     """
-    import json
     import shutil
     import subprocess
 
@@ -773,7 +772,7 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
             console.print(f"\n[dim]Install with: uv-helper install {git_url} -s {example_script}[/dim]")
 
     def try_github_api(owner: str, repo: str, ref: str | None) -> list[str] | None:
-        """Try to list files using GitHub API. Returns None if not available."""
+        """Try to list .py files using GitHub API. Returns None if not available."""
         # Check if gh is available
         if shutil.which("gh") is None:
             return None
@@ -783,14 +782,20 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
 
         try:
             result = subprocess.run(
-                ["gh", "api", f"repos/{owner}/{repo}/git/trees/{tree_ref}?recursive=1"],
+                [
+                    "gh",
+                    "api",
+                    f"repos/{owner}/{repo}/git/trees/{tree_ref}?recursive=1",
+                    "--jq",
+                    '.tree[] | select(.type == "blob" and (.path | endswith(".py"))) | .path',
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            data = json.loads(result.stdout)
-            return [item["path"] for item in data.get("tree", []) if item["type"] == "blob"]
-        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+            # Each line is a .py file path
+            return [line for line in result.stdout.strip().split("\n") if line]
+        except subprocess.CalledProcessError:
             return None
 
     parsed = parse_git_url(git_url)

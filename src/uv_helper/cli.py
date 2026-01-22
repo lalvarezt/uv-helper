@@ -18,7 +18,12 @@ from rich.console import Console
 from . import __version__
 from .commands import InstallHandler, InstallRequest, RemoveHandler, UpdateHandler
 from .config import load_config
-from .display import display_install_results, display_scripts_table, display_update_results
+from .display import (
+    display_install_results,
+    display_script_details,
+    display_scripts_table,
+    display_update_results,
+)
 from .script_installer import ScriptInstallerError, verify_uv_available
 from .state import StateManager
 
@@ -286,6 +291,38 @@ def list_scripts(ctx: click.Context, verbose: bool, tree: bool) -> None:
         console.print(tree_view)
     else:
         display_scripts_table(scripts, verbose, console)
+
+
+@cli.command()
+@click.argument("script-name")
+@click.pass_context
+def show(ctx: click.Context, script_name: str) -> None:
+    """
+    Show detailed information about an installed script.
+
+    Displays comprehensive information about a specific script including
+    source details, paths, installation date, and dependencies.
+
+    Examples:
+
+        \b
+        # Show details for a script
+        uv-helper show myscript
+
+        \b
+        # Show details using alias
+        uv-helper show myalias
+    """
+    config = ctx.obj["config"]
+    state_manager = StateManager(config.state_file)
+
+    script_info = state_manager.get_script_flexible(script_name)
+    if script_info is None:
+        console.print(f"[red]Error:[/red] Script '{script_name}' not found.")
+        sys.exit(1)
+        return  # Help type checker understand this is unreachable
+
+    display_script_details(script_info, console)
 
 
 @cli.command()

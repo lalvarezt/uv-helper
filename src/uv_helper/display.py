@@ -140,3 +140,53 @@ def display_update_results(
         table.add_row(script_name, status_text)
 
     console.print(table)
+
+
+def display_script_details(script: ScriptInfo, console: Console) -> None:
+    """
+    Display detailed information about a single script.
+
+    Args:
+        script: ScriptInfo instance
+        console: Rich console instance for output
+    """
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Label", style="dim")
+    table.add_column("Value")
+
+    # Basic info
+    table.add_row("Name:", f"[cyan]{script.name}[/cyan]")
+
+    if script.symlink_path and script.symlink_path.name != script.name:
+        table.add_row("Alias:", f"[cyan]{script.symlink_path.name}[/cyan]")
+
+    # Source info
+    if script.source_type == SourceType.GIT:
+        table.add_row("Source type:", "Git repository")
+        table.add_row("Source URL:", f"[magenta]{script.source_url}[/magenta]")
+        table.add_row("Branch/Tag:", f"[green]{script.ref or 'default'}[/green]")
+        table.add_row("Commit:", f"[blue]{script.commit_hash or 'N/A'}[/blue]")
+    else:
+        table.add_row("Source type:", "Local directory")
+        source_path = str(script.source_path) if script.source_path else "N/A"
+        table.add_row("Source path:", f"[magenta]{source_path}[/magenta]")
+        if script.copy_parent_dir:
+            table.add_row("Copy mode:", "Entire directory")
+
+    # Paths
+    table.add_row("Script path:", str(script.repo_path / script.name))
+    if script.symlink_path:
+        table.add_row("Symlink:", str(script.symlink_path))
+
+    # Installation info
+    table.add_row("Installed:", script.installed_at.strftime("%Y-%m-%d %H:%M:%S"))
+
+    # Dependencies
+    if script.dependencies:
+        deps_str = ", ".join(script.dependencies)
+        table.add_row("Dependencies:", deps_str)
+    else:
+        table.add_row("Dependencies:", "[dim]None[/dim]")
+
+    title = f"Script: {script.display_name}"
+    console.print(Panel(table, title=title, border_style="cyan"))

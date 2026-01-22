@@ -665,9 +665,11 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
     """
     Browse available Python scripts in a Git repository.
 
-    Clones the repository temporarily and lists all Python files that can
-    be installed. By default, excludes common non-script files like
-    __init__.py, setup.py, conftest.py, etc.
+    For GitHub repositories, uses the GitHub API for fast listing without
+    cloning. For other repositories, clones to local cache and lists files.
+
+    By default, excludes common non-script files like __init__.py, setup.py,
+    conftest.py, etc.
 
     Examples:
 
@@ -683,12 +685,14 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
         # Show all .py files including __init__.py, setup.py
         uv-helper browse https://github.com/user/repo --all
     """
+    import json
     import shutil
-    import tempfile
+    import subprocess
 
     from rich.tree import Tree
 
-    from .git_manager import GitError, clone_repository, parse_git_url
+    from .git_manager import GitError, clone_or_update, parse_git_url
+    from .utils import get_repo_name_from_url
 
     # Files to exclude by default (common non-script files)
     EXCLUDED_FILES = {
@@ -701,52 +705,38 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
     }
     EXCLUDED_PREFIXES = ("test_", "_")
     EXCLUDED_SUFFIXES = ("_test.py",)
+    EXCLUDED_DIRS = {"__pycache__", "venv", ".venv", "node_modules"}
 
-    parsed = parse_git_url(git_url)
-
-    console.print(f"Browsing [cyan]{parsed.base_url}[/cyan]", end="")
-    if parsed.ref_value:
-        console.print(f" @ [yellow]{parsed.ref_value}[/yellow]")
-    else:
-        console.print()
-
-    # Clone to temp directory
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir) / "repo"
-
-        try:
-            console.print("[dim]Cloning repository...[/dim]")
-            clone_repository(
-                parsed.base_url,
-                temp_path,
-                depth=1,
-                ref=parsed.ref_value,
-            )
-        except GitError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            sys.exit(1)
-
-        # Find all .py files
+    def filter_py_files(file_paths: list[str]) -> list[Path]:
+        """Filter and convert file paths to Path objects."""
         py_files: list[Path] = []
-        for py_file in temp_path.rglob("*.py"):
-            # Skip hidden directories and common non-source directories
-            parts = py_file.relative_to(temp_path).parts
+        for file_path in file_paths:
+            if not file_path.endswith(".py"):
+                continue
+
+            path = Path(file_path)
+            parts = path.parts
+
+            # Skip hidden directories
             if any(part.startswith(".") for part in parts):
                 continue
-            if any(part in {"__pycache__", "venv", ".venv", "node_modules"} for part in parts):
+            # Skip excluded directories
+            if any(part in EXCLUDED_DIRS for part in parts):
                 continue
 
             if not show_all:
-                # Apply exclusion filters
-                if py_file.name in EXCLUDED_FILES:
+                if path.name in EXCLUDED_FILES:
                     continue
-                if py_file.name.startswith(EXCLUDED_PREFIXES):
+                if path.name.startswith(EXCLUDED_PREFIXES):
                     continue
-                if py_file.name.endswith(EXCLUDED_SUFFIXES):
+                if path.name.endswith(EXCLUDED_SUFFIXES):
                     continue
 
-            py_files.append(py_file.relative_to(temp_path))
+            py_files.append(path)
+        return py_files
 
+    def display_results(py_files: list[Path], repo_name: str) -> None:
+        """Display the results as a tree."""
         if not py_files:
             console.print("\n[yellow]No Python scripts found.[/yellow]")
             if not show_all:
@@ -763,7 +753,7 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
 
         # Display as tree
         console.print()
-        tree = Tree(f"[bold]{parsed.base_url.split('/')[-1]}[/bold]")
+        tree = Tree(f"[bold]{repo_name}[/bold]")
 
         for directory in sorted(files_by_dir.keys()):
             if directory == Path("."):
@@ -781,6 +771,86 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
         if py_files:
             example_script = py_files[0]
             console.print(f"\n[dim]Install with: uv-helper install {git_url} -s {example_script}[/dim]")
+
+    def try_github_api(owner: str, repo: str, ref: str | None) -> list[str] | None:
+        """Try to list files using GitHub API. Returns None if not available."""
+        # Check if gh is available
+        if shutil.which("gh") is None:
+            return None
+
+        # Use ref or default to HEAD
+        tree_ref = ref or "HEAD"
+
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{owner}/{repo}/git/trees/{tree_ref}?recursive=1"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            data = json.loads(result.stdout)
+            return [item["path"] for item in data.get("tree", []) if item["type"] == "blob"]
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+            return None
+
+    parsed = parse_git_url(git_url)
+
+    console.print(f"Browsing [cyan]{parsed.base_url}[/cyan]", end="")
+    if parsed.ref_value:
+        console.print(f" @ [yellow]{parsed.ref_value}[/yellow]")
+    else:
+        console.print()
+
+    # Check if it's a GitHub URL
+    is_github = "github.com" in parsed.base_url
+    repo_name = parsed.base_url.split("/")[-1]
+
+    if is_github:
+        # Extract owner/repo from URL
+        # URL format: https://github.com/owner/repo
+        parts = parsed.base_url.rstrip("/").split("/")
+        if len(parts) >= 2:
+            owner, repo = parts[-2], parts[-1]
+
+            console.print("[dim]Fetching file list from GitHub API...[/dim]")
+            files = try_github_api(owner, repo, parsed.ref_value)
+
+            if files is not None:
+                py_files = filter_py_files(files)
+                display_results(py_files, repo_name)
+                return
+
+            console.print("[dim]GitHub API unavailable, falling back to clone...[/dim]")
+
+    # Fallback: clone/update to cached directory in temp
+    import tempfile
+
+    browse_cache_dir = Path(tempfile.gettempdir()) / "uv-helper-browse"
+    browse_cache_dir.mkdir(exist_ok=True)
+
+    repo_dir_name = get_repo_name_from_url(parsed.base_url)
+    repo_path = browse_cache_dir / repo_dir_name
+
+    try:
+        if repo_path.exists():
+            console.print("[dim]Updating cached repository...[/dim]")
+        else:
+            console.print("[dim]Cloning repository...[/dim]")
+
+        clone_or_update(
+            parsed.base_url,
+            parsed.ref_value,
+            repo_path,
+            depth=1,
+        )
+    except GitError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    # Find all .py files from cloned repo
+    file_paths = [str(f.relative_to(repo_path)) for f in repo_path.rglob("*.py")]
+    py_files = filter_py_files(file_paths)
+    display_results(py_files, repo_name)
 
 
 @cli.command("doctor")

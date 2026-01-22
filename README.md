@@ -38,11 +38,14 @@ script.py --help
 - **Direct Git Installation**: Install scripts from any Git repository (GitHub, GitLab, Bitbucket, self-hosted) with one command
 - **Local Directory Support**: Install scripts from local directories on your filesystem
 - **Script Aliasing**: Install scripts with custom names using the `--alias` flag
-- **Git Refs Support**: Install from specific branches, tags, or commits
-- **Dependency Management**: Automatically handle script dependencies
+- **Git Refs Support**: Install from specific branches, tags, or commits (pinned refs are preserved during updates)
+- **Dependency Management**: Full requirements.txt support including `-r` includes, extras, and version specifiers
 - **Local Package Dependencies**: Add local packages as dependencies with automatic path management
 - **Idempotent Operations**: Re-running installs updates instead of failing
 - **State Tracking**: Keep track of all installed scripts
+- **Export/Import**: Backup and restore script installations
+- **Browse Repositories**: List available scripts in a repository before installing
+- **Shell Completion**: Tab completion for bash, zsh, and fish
 - **Rich CLI**: Beautiful terminal output with progress bars and tables
 - **Configuration**: Customize behavior via TOML config files
 - **Update Management**: Update individual scripts or all at once
@@ -117,6 +120,7 @@ uv-helper install <git-url> --script <script.py> [--script <more.py> ...] [OPTIO
 - `--with TEXT`: Dependencies (`requirements.txt` path or comma-separated list, appends to existing dependencies)
 - `--force`: Force overwrite without confirmation
 - `--no-symlink`: Skip creating symlinks
+- `--no-deps`: Skip dependency resolution entirely
 - `--install-dir PATH`: Custom installation directory
 - `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 - `--copy-parent-dir`: For local sources, copy entire parent directory instead of just the script
@@ -148,6 +152,9 @@ uv-helper install https://github.com/user/repo \
 # Install with custom alias
 uv-helper install https://github.com/user/repo --script long_script_name.py --alias short
 # Now you can run: short --help
+
+# Install without dependencies
+uv-helper install https://github.com/user/repo --script standalone.py --no-deps
 ```
 
 ### `list`
@@ -214,9 +221,10 @@ uv-helper update <script-name> [OPTIONS]
 **Options:**
 
 - `--force`: Force reinstall even if up-to-date
+- `--refresh-deps`: Re-resolve dependencies from the repository's requirements.txt
 - `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 
-Aliases are automatically preserved when updating scripts.
+Aliases are automatically preserved when updating scripts. Scripts installed from tags or commits are treated as pinned and will not be updated unless `--force` is used.
 
 **Examples:**
 
@@ -237,10 +245,11 @@ uv-helper update-all [OPTIONS]
 **Options:**
 
 - `--force`: Force reinstall all scripts
+- `--refresh-deps`: Re-resolve dependencies from each repository's requirements.txt
 - `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 
 Local installations are skipped automatically (reported as `skipped (local)`) because UV-Helper
-needs access to the original source directory to refresh them.
+needs access to the original source directory to refresh them. Scripts installed from tags or commits are treated as pinned and reported as `pinned`.
 
 **Examples:**
 
@@ -270,6 +279,116 @@ uv-helper doctor
 
 # Check and auto-repair issues
 uv-helper doctor --repair
+```
+
+### `browse`
+
+List available scripts in a repository before installing.
+
+```bash
+uv-helper browse <source> [OPTIONS]
+```
+
+**Arguments:**
+
+- `source`: Git repository URL (supports `@tag`, `#branch` suffixes)
+
+**Options:**
+
+- `--all`, `-a`: Show all Python files including typically excluded ones (tests, `__init__.py`, etc.)
+
+For GitHub repositories, uses the GitHub API for fast listing without cloning. For other repositories, clones to a cached directory.
+
+**Examples:**
+
+```bash
+# List installable scripts in a repository
+uv-helper browse https://github.com/user/repo
+
+# List scripts from a specific tag
+uv-helper browse https://github.com/user/repo@v1.0.0
+
+# Show all Python files including tests
+uv-helper browse https://github.com/user/repo --all
+```
+
+### `export`
+
+Export installed scripts to a JSON file for backup or sharing.
+
+```bash
+uv-helper export [OPTIONS]
+```
+
+**Options:**
+
+- `-o`, `--output PATH`: Output file path (default: stdout)
+
+**Examples:**
+
+```bash
+# Export to stdout
+uv-helper export
+
+# Export to a file
+uv-helper export -o scripts-backup.json
+```
+
+### `import`
+
+Import and reinstall scripts from an export file.
+
+```bash
+uv-helper import <file> [OPTIONS]
+```
+
+**Arguments:**
+
+- `file`: Path to the export JSON file
+
+**Options:**
+
+- `--dry-run`: Preview what would be installed without making changes
+- `--force`: Force overwrite existing scripts
+
+**Examples:**
+
+```bash
+# Preview what would be imported
+uv-helper import scripts-backup.json --dry-run
+
+# Import scripts from backup
+uv-helper import scripts-backup.json
+
+# Force overwrite existing scripts
+uv-helper import scripts-backup.json --force
+```
+
+### `completion`
+
+Generate shell completion scripts.
+
+```bash
+uv-helper completion <shell>
+```
+
+**Arguments:**
+
+- `shell`: Shell type (`fish`, `bash`, or `zsh`)
+
+Generates shell-specific completion scripts that provide context-aware suggestions including installed script names for commands like `show`, `remove`, and `update`.
+
+**Examples:**
+
+```bash
+# Fish shell
+uv-helper completion fish > ~/.config/fish/completions/uv-helper.fish
+
+# Bash (add to ~/.bashrc)
+uv-helper completion bash >> ~/.bashrc
+
+# Zsh (add to ~/.zshrc)
+uv-helper completion zsh >> ~/.zshrc
 ```
 
 ## Configuration

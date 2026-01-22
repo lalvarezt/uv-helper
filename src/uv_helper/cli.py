@@ -458,6 +458,192 @@ def update_all(ctx: click.Context, force: bool, exact: bool | None, refresh_deps
         sys.exit(1)
 
 
+@cli.command("export")
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    help="Output file path (default: stdout)",
+)
+@click.pass_context
+def export_scripts(ctx: click.Context, output: Path | None) -> None:
+    """
+    Export installed scripts to a JSON file for backup or sharing.
+
+    Creates a JSON file containing all installed scripts with their
+    source URLs, refs, and installation options. This file can be
+    used with 'uv-helper import' to reinstall scripts on another machine.
+
+    Examples:
+
+        \b
+        # Export to stdout
+        uv-helper export
+
+        \b
+        # Export to a file
+        uv-helper export -o scripts.json
+    """
+    import json
+
+    from .constants import SourceType
+
+    config = ctx.obj["config"]
+    state_manager = StateManager(config.state_file)
+
+    scripts = state_manager.list_scripts()
+
+    if not scripts:
+        console.print("No scripts installed.")
+        return
+
+    scripts_list: list[dict[str, str | list[str] | bool | None]] = []
+    export_data: dict[str, int | list[dict[str, str | list[str] | bool | None]]] = {
+        "version": 1,
+        "scripts": scripts_list,
+    }
+
+    for script in scripts:
+        script_data: dict[str, str | list[str] | bool | None] = {
+            "name": script.name,
+            "source_type": script.source_type.value,
+        }
+
+        if script.source_type == SourceType.GIT:
+            # Build source URL with ref if present
+            source_url = script.source_url
+            if script.ref:
+                script_data["ref"] = script.ref
+            script_data["source"] = source_url
+        else:
+            script_data["source"] = str(script.source_path) if script.source_path else None
+            script_data["copy_parent_dir"] = script.copy_parent_dir
+
+        if script.dependencies:
+            script_data["dependencies"] = script.dependencies
+
+        # Check for alias
+        if script.symlink_path and script.symlink_path.name != script.name:
+            script_data["alias"] = script.symlink_path.name
+
+        scripts_list.append(script_data)
+
+    json_output = json.dumps(export_data, indent=2)
+
+    if output:
+        output.write_text(json_output)
+        console.print(f"[green]✓[/green] Exported {len(scripts)} script(s) to {output}")
+    else:
+        console.print(json_output)
+
+
+@cli.command("import")
+@click.argument("file", type=click.Path(exists=True, path_type=Path))
+@click.option("--force", "-f", is_flag=True, help="Force overwrite existing scripts without confirmation")
+@click.option("--dry-run", is_flag=True, help="Show what would be installed without actually installing")
+@click.pass_context
+def import_scripts(ctx: click.Context, file: Path, force: bool, dry_run: bool) -> None:
+    """
+    Import and install scripts from an export file.
+
+    Reads a JSON file created by 'uv-helper export' and installs
+    all scripts defined in it. Useful for setting up a new machine
+    or sharing script configurations.
+
+    Examples:
+
+        \b
+        # Import scripts from a file
+        uv-helper import scripts.json
+
+        \b
+        # Preview what would be installed
+        uv-helper import scripts.json --dry-run
+
+        \b
+        # Force overwrite existing scripts
+        uv-helper import scripts.json --force
+    """
+    import json
+
+    from .constants import SourceType
+
+    config = ctx.obj["config"]
+
+    try:
+        data = json.loads(file.read_text())
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Error:[/red] Invalid JSON file: {e}")
+        sys.exit(1)
+
+    if "scripts" not in data:
+        console.print("[red]Error:[/red] Invalid export file: missing 'scripts' key")
+        sys.exit(1)
+
+    scripts = data["scripts"]
+    if not scripts:
+        console.print("No scripts to import.")
+        return
+
+    if dry_run:
+        console.print("[bold]Dry run - the following scripts would be installed:[/bold]\n")
+        for script_data in scripts:
+            name = script_data.get("name", "unknown")
+            source = script_data.get("source", "unknown")
+            ref = script_data.get("ref", "")
+            alias = script_data.get("alias")
+
+            ref_str = f"@{ref}" if ref else ""
+            alias_str = f" (as {alias})" if alias else ""
+            console.print(f"  • {name}{alias_str} from {source}{ref_str}")
+        return
+
+    console.print(f"Importing {len(scripts)} script(s)...\n")
+
+    handler = InstallHandler(config, console)
+    results = []
+
+    for script_data in scripts:
+        name = script_data.get("name")
+        source = script_data.get("source")
+        source_type = script_data.get("source_type", "git")
+        ref = script_data.get("ref")
+        deps = script_data.get("dependencies", [])
+        alias = script_data.get("alias")
+        copy_parent_dir = script_data.get("copy_parent_dir", False)
+
+        if not name or not source:
+            results.append((name or "unknown", False, "Missing name or source"))
+            continue
+
+        # Build source URL with ref for Git sources
+        if source_type == SourceType.GIT.value and ref:
+            # Use # for branch-like refs, @ for tag-like refs
+            if ref.startswith("v") or ref[0].isdigit():
+                source = f"{source}@{ref}"
+            else:
+                source = f"{source}#{ref}"
+
+        try:
+            request = InstallRequest(
+                with_deps=",".join(deps) if deps else None,
+                force=force,
+                no_symlink=False,
+                install_dir=None,
+                verbose=False,
+                exact=None,
+                copy_parent_dir=copy_parent_dir,
+                add_source_package=None,
+                alias=alias,
+            )
+            result = handler.install(source=source, scripts=(name,), request=request)
+            results.extend(result)
+        except (ValueError, FileNotFoundError, NotADirectoryError) as e:
+            results.append((name, False, str(e)))
+
+    display_install_results(results, config.install_dir, console)
+
+
 @cli.command("doctor")
 @click.option("--repair", is_flag=True, help="Automatically repair state issues")
 @click.pass_context

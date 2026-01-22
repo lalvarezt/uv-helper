@@ -688,6 +688,7 @@ def import_scripts(ctx: click.Context, file: Path, force: bool, dry_run: bool) -
                 copy_parent_dir=copy_parent_dir,
                 add_source_package=None,
                 alias=alias,
+                no_deps=False,
             )
             result = handler.install(source=source, scripts=(name,), request=request)
             results.extend(result)

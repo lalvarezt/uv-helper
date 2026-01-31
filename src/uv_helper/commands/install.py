@@ -236,6 +236,7 @@ class InstallHandler:
                     git_ref.ref_value,
                     repo_path,
                     depth=self.config.clone_depth,
+                    ref_type=git_ref.ref_type,
                 ),
             )
 

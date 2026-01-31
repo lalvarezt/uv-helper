@@ -1,5 +1,6 @@
 """Git operations for UV-Helper."""
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Literal
@@ -69,7 +70,11 @@ def parse_git_url(url: str) -> GitRef:
     # where @ is part of the host specification, not a ref delimiter
     if "@" in url and not url.startswith("git@"):
         base_url, ref_value = url.rsplit("@", 1)  # rsplit ensures we split on the last @
-        ref_type = "tag"
+        # Detect commit hashes (7-40 hex characters)
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref_value):
+            ref_type = "commit"
+        else:
+            ref_type = "tag"
     # Parse # suffix for branch specification
     elif "#" in url:
         base_url, ref_value = url.rsplit("#", 1)
@@ -86,6 +91,7 @@ def clone_repository(
     target_dir: Path,
     depth: int = 1,
     ref: str | None = None,
+    ref_type: str | None = None,
 ) -> bool:
     """
     Clone a Git repository.
@@ -95,6 +101,8 @@ def clone_repository(
         target_dir: Directory to clone into
         depth: Clone depth (1 for shallow clone)
         ref: Specific branch/tag to clone
+        ref_type: Type of ref ("branch", "tag", "commit", or "default").
+            When "commit", clones without --branch and checks out after.
 
     Returns:
         True if successful
@@ -102,15 +110,21 @@ def clone_repository(
     Raises:
         GitError: If clone fails
     """
+    is_commit = ref_type == "commit"
+
     cmd = ["git", "clone", "--depth", str(depth)]
 
-    if ref:
+    if ref and not is_commit:
         cmd.extend(["--branch", ref])
 
     cmd.extend([url, str(target_dir)])
 
     try:
         run_command(cmd, capture_output=True, check=True)
+        # For commit refs, fetch the specific commit and checkout after clone
+        if ref and is_commit:
+            run_command(["git", "fetch", "origin", ref], cwd=target_dir, check=True)
+            checkout_ref(target_dir, ref)
         return True
     except subprocess.CalledProcessError as e:
         raise GitError(f"Failed to clone repository: {e.stderr}") from e
@@ -180,18 +194,17 @@ def update_repository(repo_path: Path, ref: str | None = None) -> bool:
         GitError: If update fails
     """
     try:
-        # First, always fetch (with tags for tag refs)
-        is_tag_like = bool(ref and (ref.startswith("v") or ref[0].isdigit()))
-        fetch_repository(repo_path, fetch_tags=is_tag_like)
+        # Always fetch with tags to ensure tag refs are available
+        fetch_repository(repo_path, fetch_tags=True)
 
-        # If we have a specific ref or are in detached HEAD, checkout the ref
-        if ref or is_detached_head(repo_path):
-            if ref:
-                checkout_ref(repo_path, ref)
-            # Don't pull in detached HEAD state
+        if ref:
+            checkout_ref(repo_path, ref)
+
+        if is_detached_head(repo_path):
+            # Tag or commit - don't pull
             return True
 
-        # For branches, do a pull
+        # Branch - pull to get latest
         run_command(["git", "pull"], cwd=repo_path, check=True)
         return True
     except subprocess.CalledProcessError as e:
@@ -325,6 +338,7 @@ def clone_or_update(
     ref: str | None,
     target_dir: Path,
     depth: int = 1,
+    ref_type: str | None = None,
 ) -> bool:
     """
     Clone repository if not exists, otherwise update it.
@@ -334,6 +348,7 @@ def clone_or_update(
         ref: Specific branch/tag/commit
         target_dir: Directory to clone into
         depth: Clone depth
+        ref_type: Type of ref ("branch", "tag", "commit", or "default")
 
     Returns:
         True if successful
@@ -346,7 +361,7 @@ def clone_or_update(
         update_repository(target_dir, ref)
     else:
         # Clone repository
-        clone_repository(url, target_dir, depth=depth, ref=ref)
+        clone_repository(url, target_dir, depth=depth, ref=ref, ref_type=ref_type)
 
     return True
 

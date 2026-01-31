@@ -567,6 +567,8 @@ def export_scripts(ctx: click.Context, output: Path | None) -> None:
             source_url = script.source_url
             if script.ref:
                 script_data["ref"] = script.ref
+            if script.ref_type:
+                script_data["ref_type"] = script.ref_type
             script_data["source"] = source_url
         else:
             script_data["source"] = str(script.source_path) if script.source_path else None
@@ -671,11 +673,17 @@ def import_scripts(ctx: click.Context, file: Path, force: bool, dry_run: bool) -
 
         # Build source URL with ref for Git sources
         if source_type == SourceType.GIT.value and ref:
-            # Use # for branch-like refs, @ for tag-like refs
-            if ref.startswith("v") or ref[0].isdigit():
+            stored_ref_type = script_data.get("ref_type")
+            if stored_ref_type == "branch":
+                source = f"{source}#{ref}"
+            elif stored_ref_type in ("tag", "commit"):
                 source = f"{source}@{ref}"
             else:
-                source = f"{source}#{ref}"
+                # Fallback heuristic for older exports without ref_type
+                if ref.startswith("v") or ref[0].isdigit():
+                    source = f"{source}@{ref}"
+                else:
+                    source = f"{source}#{ref}"
 
         try:
             request = InstallRequest(
@@ -890,6 +898,7 @@ def browse(ctx: click.Context, git_url: str, show_all: bool) -> None:
             parsed.ref_value,
             repo_path,
             depth=1,
+            ref_type=parsed.ref_type,
         )
     except GitError as e:
         console.print(f"[red]Error:[/red] {e}")

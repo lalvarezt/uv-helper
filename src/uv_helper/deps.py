@@ -10,12 +10,13 @@ def parse_requirements_file(requirements_path: Path) -> list[str]:
     """
     Parse requirements.txt file using requirements-parser library.
 
-    Handles all pip requirements.txt features including:
+    Handles:
     - `-r` includes (recursive)
     - `-e` editable installs
-    - `-c` constraints
     - Environment markers
     - Extras and version specifiers
+
+    Note: `-c` constraints and index options are not supported.
 
     Args:
         requirements_path: Path to requirements.txt
@@ -34,13 +35,7 @@ def parse_requirements_file(requirements_path: Path) -> list[str]:
     with open(requirements_path, encoding="utf-8") as f:
         for req in requirements.parse(f):
             if req.name:
-                # Build the full requirement string
-                dep = req.name
-                if req.extras:
-                    dep += f"[{','.join(req.extras)}]"
-                if req.specs:
-                    dep += ",".join(f"{op}{ver}" for op, ver in req.specs)
-                dependencies.append(dep)
+                dependencies.append(req.line.strip())
 
     return dependencies
 

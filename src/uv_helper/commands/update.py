@@ -209,7 +209,7 @@ class UpdateHandler:
         # Check if this is a pinned ref (tag or commit)
         is_pinned = script_info.ref_type in ("tag", "commit")
 
-        if is_pinned and not force:
+        if is_pinned and not force and not refresh_deps:
             # Pinned refs don't get updates - they're intentionally fixed
             return f"pinned to {script_info.ref}"
 

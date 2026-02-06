@@ -57,6 +57,15 @@ class TestIsGitUrl:
         """Test GitLab URL."""
         assert is_git_url("https://gitlab.com/user/repo")
 
+    def test_ssh_scheme_url(self) -> None:
+        """Test ssh:// URL."""
+        assert is_git_url("ssh://git@github.com/user/repo.git")
+
+    def test_ssh_scheme_url_with_ref_suffixes(self) -> None:
+        """Test ssh:// URL with @tag and #branch suffixes."""
+        assert is_git_url("ssh://git@github.com/user/repo.git@v1.0.0")
+        assert is_git_url("ssh://git@github.com/user/repo.git#develop")
+
     def test_url_with_git_extension(self) -> None:
         """Test URL with .git extension."""
         assert is_git_url("https://example.com/repo.git")

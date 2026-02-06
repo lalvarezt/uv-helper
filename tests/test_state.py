@@ -342,3 +342,38 @@ class TestStateManager:
         assert retrieved.name == "test.py"
         assert retrieved.source_url == "https://github.com/user/repo"
         assert retrieved.commit_hash == "abc123"
+
+    def test_validate_state_reports_wrong_symlink_target(self, tmp_path: Path) -> None:
+        """Test validate_state reports symlinks that point to unexpected targets."""
+        state_file = tmp_path / "state.json"
+        manager = StateManager(state_file)
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        expected_script = repo_path / "test.py"
+        expected_script.write_text("print('ok')\n", encoding="utf-8")
+
+        other_target = tmp_path / "other.py"
+        other_target.write_text("print('other')\n", encoding="utf-8")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        symlink_path = bin_dir / "test.py"
+        symlink_path.symlink_to(other_target)
+
+        script = ScriptInfo(
+            name="test.py",
+            source_type=SourceType.GIT,
+            source_url="https://github.com/user/repo",
+            ref="main",
+            installed_at=datetime.now(),
+            repo_path=repo_path,
+            symlink_path=symlink_path,
+            dependencies=[],
+            commit_hash="abc123",
+        )
+        manager.add_script(script)
+
+        issues = manager.validate_state()
+
+        assert any("Symlink points to wrong target" in issue for issue in issues)

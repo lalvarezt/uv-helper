@@ -50,6 +50,42 @@ class TestParseRequirementsFile:
 
         assert result == ["requests", "click"]
 
+    def test_handles_include_editable_url_and_ignores_non_install_directives(self, tmp_path: Path) -> None:
+        """Test requirements parsing for includes/editables/URLs and ignored directives."""
+        req_file = tmp_path / "requirements.txt"
+        extra_file = tmp_path / "extra.txt"
+        constraints_file = tmp_path / "constraints.txt"
+
+        extra_file.write_text("requests>=2.31.0\n", encoding="utf-8")
+        constraints_file.write_text("urllib3<3\n", encoding="utf-8")
+
+        req_file.write_text(
+            "\n".join(
+                [
+                    "-r extra.txt",
+                    "-e git+https://github.com/pallets/click.git@main#egg=click",
+                    "https://example.com/pkg-1.0.0-py3-none-any.whl",
+                    "-c constraints.txt",
+                    "--constraint constraints.txt",
+                    "--index-url https://pypi.org/simple",
+                    "--extra-index-url https://example.com/simple",
+                    "--find-links https://example.com/wheels",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = parse_requirements_file(req_file)
+
+        assert "requests>=2.31.0" in result
+        assert "-e git+https://github.com/pallets/click.git@main#egg=click" in result
+        assert "https://example.com/pkg-1.0.0-py3-none-any.whl" in result
+        assert all(
+            not dep.startswith(("-c", "--constraint", "--index-url", "--extra-index-url", "--find-links"))
+            for dep in result
+        )
+
     def test_file_not_found(self, tmp_path: Path) -> None:
         """Test FileNotFoundError for missing file."""
         req_file = tmp_path / "nonexistent.txt"

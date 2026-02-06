@@ -9,6 +9,7 @@ from uv_helper.migrations import (
     MIGRATIONS,
     Migration001AddSourceType,
     Migration002AddCopyParentDir,
+    Migration003AddRefType,
     MigrationRunner,
 )
 from uv_helper.state import StateManager
@@ -173,6 +174,32 @@ class TestMigration002AddCopyParentDir:
         db.close()
 
 
+class TestMigration003AddRefType:
+    """Tests for Migration003AddRefType."""
+
+    def test_infers_ref_type_for_legacy_rows(self, tmp_path: Path) -> None:
+        """Test that migration infers default/branch/tag/commit from existing ref values."""
+        db_path = tmp_path / "test.json"
+        db = TinyDB(db_path)
+        scripts_table = db.table("scripts")
+
+        scripts_table.insert({"name": "default.py", "ref": None})
+        scripts_table.insert({"name": "branch.py", "ref": "main"})
+        scripts_table.insert({"name": "tag.py", "ref": "v1.2.3"})
+        scripts_table.insert({"name": "commit.py", "ref": "deadbeef"})
+
+        migration = Migration003AddRefType()
+        migration.migrate(db)
+
+        scripts_by_name = {script["name"]: script for script in scripts_table.all()}
+        assert scripts_by_name["default.py"]["ref_type"] == "default"
+        assert scripts_by_name["branch.py"]["ref_type"] == "branch"
+        assert scripts_by_name["tag.py"]["ref_type"] == "tag"
+        assert scripts_by_name["commit.py"]["ref_type"] == "commit"
+
+        db.close()
+
+
 class TestMigrationRunner:
     """Tests for MigrationRunner."""
 
@@ -331,3 +358,37 @@ class TestStateManagerMigration:
         runner2 = MigrationRunner(state_manager2.db, state_file)
         version_after_second = runner2.get_schema_version()
         assert version_after_second == version_after_first
+
+    def test_state_manager_applies_migration_003_on_init(self, tmp_path: Path) -> None:
+        """Test that StateManager applies ref_type migration for schema version 2 databases."""
+        state_file = tmp_path / "state.json"
+        db = TinyDB(state_file)
+
+        metadata_table = db.table("metadata")
+        metadata_table.insert({"schema_version": 2})
+
+        scripts_table = db.table("scripts")
+        scripts_table.insert(
+            {
+                "name": "legacy.py",
+                "source_type": "git",
+                "source_url": "https://github.com/user/repo",
+                "ref": "deadbeef",
+                "installed_at": "2025-01-01T12:00:00",
+                "repo_path": str(tmp_path / "repo"),
+                "symlink_path": str(tmp_path / "bin" / "legacy.py"),
+                "dependencies": [],
+                "commit_hash": "deadbeef",
+                "copy_parent_dir": False,
+            }
+        )
+        db.close()
+
+        state_manager = StateManager(state_file)
+        script = state_manager.get_script("legacy.py")
+
+        assert script is not None
+        assert script.ref_type == "commit"
+
+        runner = MigrationRunner(state_manager.db, state_file)
+        assert runner.get_schema_version() == CURRENT_SCHEMA_VERSION

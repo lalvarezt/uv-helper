@@ -1,12 +1,58 @@
 """CLI integration tests for UV-Helper."""
 
+import json
+import shutil
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from uv_helper.cli import cli
 from uv_helper.constants import SourceType
-from uv_helper.state import StateManager
+from uv_helper.state import ScriptInfo, StateManager
+
+REQUIRES_UV = pytest.mark.skipif(shutil.which("uv") is None, reason="uv command required")
+REQUIRES_GIT = pytest.mark.skipif(shutil.which("git") is None, reason="git command required")
+REQUIRES_UV_HELPER = pytest.mark.skipif(
+    shutil.which("uv-helper") is None,
+    reason="uv-helper executable required",
+)
+
+
+def _run_git(repo_path: Path, *args: str) -> str:
+    """Run a git command in the given repository and return stdout."""
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _create_origin_repo_with_tag(tmp_path: Path) -> Path:
+    """Create a local git origin with a tagged script commit."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    _run_git(origin, "init", "-b", "main")
+    (origin / "tool.py").write_text("print('v1')\n", encoding="utf-8")
+    _run_git(origin, "add", "tool.py")
+    _run_git(
+        origin,
+        "-c",
+        "user.name=Test User",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "initial",
+    )
+    _run_git(origin, "tag", "v1.0.0")
+    return origin
 
 
 def _write_config(config_path: Path, repo_dir: Path, install_dir: Path, state_file: Path) -> None:
@@ -406,3 +452,724 @@ def test_cli_local_update_with_copy_parent_dir(tmp_path: Path, monkeypatch) -> N
     staged_new = repo_path / "newfile.txt"
     assert staged_new.exists(), "newfile.txt should be copied in update"
     assert "new content" in staged_new.read_text(encoding="utf-8")
+
+
+@REQUIRES_UV
+def test_cli_import_dry_run_uses_ref_type_for_rendering(tmp_path: Path) -> None:
+    """Dry-run import should render branch refs with # and pinned refs with @."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    import_file = tmp_path / "import.json"
+    import_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scripts": [
+                    {
+                        "name": "branch-tool.py",
+                        "source_type": "git",
+                        "source": "https://github.com/user/repo",
+                        "ref": "main",
+                        "ref_type": "branch",
+                    },
+                    {
+                        "name": "tag-tool.py",
+                        "source_type": "git",
+                        "source": "https://github.com/user/repo",
+                        "ref": "v1.2.3",
+                        "ref_type": "tag",
+                    },
+                    {
+                        "name": "commit-tool.py",
+                        "source_type": "git",
+                        "source": "https://github.com/user/repo",
+                        "ref": "deadbeef",
+                        "ref_type": "commit",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "import", str(import_file), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "branch-tool.py" in result.output
+    assert "#main" in result.output
+    assert "tag-tool.py" in result.output
+    assert "@v1.2.3" in result.output
+    assert "commit-tool.py" in result.output
+    assert "@deadbeef" in result.output
+
+
+@REQUIRES_UV
+def test_cli_import_dry_run_legacy_commit_like_ref_uses_at(tmp_path: Path) -> None:
+    """Dry-run import should treat legacy commit-like refs as pinned (@ref)."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    import_file = tmp_path / "import-legacy.json"
+    import_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "scripts": [
+                    {
+                        "name": "legacy-commit.py",
+                        "source_type": "git",
+                        "source": "https://github.com/user/repo",
+                        "ref": "deadbeef",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "import", str(import_file), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "legacy-commit.py" in result.output
+    assert "@deadbeef" in result.output
+
+
+@REQUIRES_UV
+@REQUIRES_GIT
+def test_cli_update_all_reports_local_and_pinned_statuses(tmp_path: Path) -> None:
+    """update-all should report local scripts as skipped and pinned refs as pinned."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    local_repo = repo_dir / "local-repo"
+    local_source = tmp_path / "local-source"
+    git_repo = repo_dir / "git-repo"
+    local_repo.mkdir(parents=True)
+    local_source.mkdir(parents=True)
+    git_repo.mkdir(parents=True)
+
+    state_manager = StateManager(state_file)
+    state_manager.add_script(
+        ScriptInfo(
+            name="local.py",
+            source_type=SourceType.LOCAL,
+            installed_at=datetime.now(),
+            repo_path=local_repo,
+            source_path=local_source,
+        )
+    )
+    state_manager.add_script(
+        ScriptInfo(
+            name="pinned.py",
+            source_type=SourceType.GIT,
+            source_url="https://github.com/user/repo",
+            ref="v1.0.0",
+            ref_type="tag",
+            installed_at=datetime.now(),
+            repo_path=git_repo,
+            commit_hash="deadbeef",
+        )
+    )
+
+    result = runner.invoke(cli, ["--config", str(config_path), "update-all"])
+
+    assert result.exit_code == 0, result.output
+    assert "skipped (local)" in result.output
+    assert "pinned to v1.0.0" in result.output
+
+
+@REQUIRES_UV
+def test_cli_export_import_roundtrip_local_install_no_deps(tmp_path: Path) -> None:
+    """Exported local installs should import cleanly with no extra mocking."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "tool.py").write_text("print('hello')\n", encoding="utf-8")
+
+    install_result = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "install",
+            str(source_dir),
+            "--script",
+            "tool.py",
+            "--no-deps",
+        ],
+    )
+    assert install_result.exit_code == 0, install_result.output
+
+    export_file = tmp_path / "scripts.json"
+    export_result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "export", "-o", str(export_file)],
+    )
+    assert export_result.exit_code == 0, export_result.output
+    assert export_file.exists()
+
+    exported = json.loads(export_file.read_text(encoding="utf-8"))
+    assert exported["scripts"][0]["source_type"] == "local"
+
+    remove_result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "remove", "tool.py", "--force"],
+    )
+    assert remove_result.exit_code == 0, remove_result.output
+
+    import_result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "import", str(export_file), "--force"],
+    )
+    assert import_result.exit_code == 0, import_result.output
+
+    state_manager = StateManager(state_file)
+    script = state_manager.get_script("tool.py")
+    assert script is not None
+    assert script.source_type == SourceType.LOCAL
+    assert script.dependencies == []
+
+    symlink_path = install_dir / "tool.py"
+    assert symlink_path.exists()
+    assert symlink_path.is_symlink()
+
+
+@REQUIRES_UV
+def test_cli_show_displays_ref_and_commit_for_git_scripts(tmp_path: Path) -> None:
+    """show should include Ref and Commit fields for git-backed scripts."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    state_manager = StateManager(state_file)
+    state_manager.add_script(
+        ScriptInfo(
+            name="tool.py",
+            source_type=SourceType.GIT,
+            source_url="https://github.com/user/repo",
+            ref="v2.0.0",
+            ref_type="tag",
+            installed_at=datetime.now(),
+            repo_path=repo_dir / "user-repo",
+            commit_hash="abc12345",
+        )
+    )
+
+    result = runner.invoke(cli, ["--config", str(config_path), "show", "tool.py"])
+
+    assert result.exit_code == 0, result.output
+    assert "Ref:" in result.output
+    assert "v2.0.0" in result.output
+    assert "Commit:" in result.output
+    assert "abc12345" in result.output
+
+
+@REQUIRES_UV
+def test_cli_doctor_detects_and_repairs_state_issues(tmp_path: Path) -> None:
+    """Doctor should report issues and --repair should apply fixes."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    install_dir.mkdir(parents=True, exist_ok=True)
+    state_manager = StateManager(state_file)
+
+    missing_repo = tmp_path / "missing-repo"
+    broken_repo = repo_dir / "broken-repo"
+    broken_repo.mkdir(parents=True)
+    (broken_repo / "broken.py").write_text("print('ok')\n", encoding="utf-8")
+
+    broken_symlink = install_dir / "broken.py"
+    broken_symlink.symlink_to(tmp_path / "missing-target.py")
+
+    state_manager.add_script(
+        ScriptInfo(
+            name="missing.py",
+            source_type=SourceType.LOCAL,
+            installed_at=datetime.now(),
+            repo_path=missing_repo,
+            source_path=tmp_path,
+            symlink_path=install_dir / "missing.py",
+        )
+    )
+    state_manager.add_script(
+        ScriptInfo(
+            name="broken.py",
+            source_type=SourceType.LOCAL,
+            installed_at=datetime.now(),
+            repo_path=broken_repo,
+            source_path=tmp_path,
+            symlink_path=broken_symlink,
+        )
+    )
+
+    check_result = runner.invoke(cli, ["--config", str(config_path), "doctor"])
+
+    assert check_result.exit_code == 0, check_result.output
+    assert "Found" in check_result.output
+    assert "doctor --repair" in check_result.output
+
+    repair_result = runner.invoke(cli, ["--config", str(config_path), "doctor", "--repair"])
+
+    assert repair_result.exit_code == 0, repair_result.output
+    assert "Repair complete" in repair_result.output
+    assert "Removed 1 broken symlink" in repair_result.output
+    assert "Removed 1 missing script" in repair_result.output
+
+    updated_state = StateManager(state_file)
+    assert updated_state.get_script("missing.py") is None
+    assert updated_state.get_script("broken.py") is not None
+    assert not broken_symlink.exists()
+
+
+@REQUIRES_UV
+def test_cli_alias_lifecycle_install_show_update_remove(tmp_path: Path) -> None:
+    """Alias should work consistently across install, show, update, and remove."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_script = source_dir / "tool.py"
+    source_script.write_text("print('v1')\n", encoding="utf-8")
+
+    install_result = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "install",
+            str(source_dir),
+            "--script",
+            "tool.py",
+            "--alias",
+            "short",
+            "--no-deps",
+        ],
+    )
+    assert install_result.exit_code == 0, install_result.output
+
+    alias_symlink = install_dir / "short"
+    assert alias_symlink.exists()
+    assert alias_symlink.is_symlink()
+
+    show_result = runner.invoke(cli, ["--config", str(config_path), "show", "short"])
+    assert show_result.exit_code == 0, show_result.output
+    assert "Alias:" in show_result.output
+    assert "short" in show_result.output
+
+    source_script.write_text("print('v2')\n", encoding="utf-8")
+    update_result = runner.invoke(cli, ["--config", str(config_path), "update", "short"])
+    assert update_result.exit_code == 0, update_result.output
+
+    staged_script = repo_dir / "tool" / "tool.py"
+    assert "v2" in staged_script.read_text(encoding="utf-8")
+
+    remove_result = runner.invoke(cli, ["--config", str(config_path), "remove", "short", "--force"])
+    assert remove_result.exit_code == 0, remove_result.output
+    assert not alias_symlink.exists()
+
+    state_manager = StateManager(state_file)
+    assert state_manager.get_script("tool.py") is None
+
+
+@REQUIRES_UV
+def test_cli_exact_flag_roundtrip_install_then_update(tmp_path: Path) -> None:
+    """Install with --no-exact and update with --exact should toggle shebang."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_script = source_dir / "tool.py"
+    source_script.write_text("print('v1')\n", encoding="utf-8")
+
+    install_result = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "install",
+            str(source_dir),
+            "--script",
+            "tool.py",
+            "--no-exact",
+            "--no-deps",
+        ],
+    )
+    assert install_result.exit_code == 0, install_result.output
+
+    staged_script = repo_dir / "tool" / "tool.py"
+    assert staged_script.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/env -S uv run --script"
+
+    source_script.write_text("print('v2')\n", encoding="utf-8")
+    update_result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "update", "tool.py", "--exact"],
+    )
+    assert update_result.exit_code == 0, update_result.output
+    assert staged_script.read_text(encoding="utf-8").splitlines()[0] == (
+        "#!/usr/bin/env -S uv run --exact --script"
+    )
+
+
+@REQUIRES_UV
+def test_cli_update_refresh_deps_recomputes_local_dependencies(tmp_path: Path) -> None:
+    """Local updates with --refresh-deps should recompute dependencies."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "tool.py").write_text("print('v1')\n", encoding="utf-8")
+
+    install_result = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "install",
+            str(source_dir),
+            "--script",
+            "tool.py",
+            "--no-deps",
+        ],
+    )
+    assert install_result.exit_code == 0, install_result.output
+
+    state_manager = StateManager(state_file)
+    script = state_manager.get_script("tool.py")
+    assert script is not None
+    script.dependencies = ["stale-dependency"]
+    state_manager.add_script(script)
+
+    update_result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "update", "tool.py", "--refresh-deps"],
+    )
+
+    assert update_result.exit_code == 0, update_result.output
+    assert "Dependencies refreshed:" in update_result.output
+
+    refreshed = StateManager(state_file).get_script("tool.py")
+    assert refreshed is not None
+    assert refreshed.dependencies == []
+
+
+@REQUIRES_UV
+@REQUIRES_GIT
+def test_cli_update_refresh_deps_runs_for_pinned_git_scripts(tmp_path: Path) -> None:
+    """Pinned git scripts should still refresh dependencies when requested."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    origin = _create_origin_repo_with_tag(tmp_path)
+    state_manager = StateManager(state_file)
+    state_manager.add_script(
+        ScriptInfo(
+            name="tool.py",
+            source_type=SourceType.GIT,
+            source_url=str(origin),
+            ref="v1.0.0",
+            ref_type="tag",
+            installed_at=datetime.now(),
+            repo_path=repo_dir / "tool-repo",
+            dependencies=["stale-dependency"],
+            commit_hash="00000000",
+        )
+    )
+
+    result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "update", "tool.py", "--refresh-deps"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "pinned to v1.0.0" not in result.output
+    assert "Updated" in result.output
+
+    updated = StateManager(state_file).get_script("tool.py")
+    assert updated is not None
+    assert updated.ref == "v1.0.0"
+    assert updated.ref_type == "tag"
+    assert updated.dependencies == []
+    assert (updated.repo_path / "tool.py").exists()
+
+
+@REQUIRES_UV
+def test_cli_remove_clean_repo_only_after_last_script(tmp_path: Path) -> None:
+    """--clean-repo should remove repository only when last script is removed."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    shared_repo = repo_dir / "shared"
+    shared_repo.mkdir(parents=True)
+    script_a = shared_repo / "a.py"
+    script_b = shared_repo / "b.py"
+    script_a.write_text("print('a')\n", encoding="utf-8")
+    script_b.write_text("print('b')\n", encoding="utf-8")
+
+    install_dir.mkdir(parents=True, exist_ok=True)
+    symlink_a = install_dir / "a.py"
+    symlink_b = install_dir / "b.py"
+    symlink_a.symlink_to(script_a)
+    symlink_b.symlink_to(script_b)
+
+    state_manager = StateManager(state_file)
+    state_manager.add_script(
+        ScriptInfo(
+            name="a.py",
+            source_type=SourceType.LOCAL,
+            installed_at=datetime.now(),
+            repo_path=shared_repo,
+            source_path=tmp_path,
+            symlink_path=symlink_a,
+        )
+    )
+    state_manager.add_script(
+        ScriptInfo(
+            name="b.py",
+            source_type=SourceType.LOCAL,
+            installed_at=datetime.now(),
+            repo_path=shared_repo,
+            source_path=tmp_path,
+            symlink_path=symlink_b,
+        )
+    )
+
+    first_remove = runner.invoke(
+        cli,
+        ["--config", str(config_path), "remove", "a.py", "--clean-repo", "--force"],
+    )
+
+    assert first_remove.exit_code == 0, first_remove.output
+    assert shared_repo.exists()
+    assert StateManager(state_file).get_script("a.py") is None
+    assert StateManager(state_file).get_script("b.py") is not None
+
+    second_remove = runner.invoke(
+        cli,
+        ["--config", str(config_path), "remove", "b.py", "--clean-repo", "--force"],
+    )
+
+    assert second_remove.exit_code == 0, second_remove.output
+    assert not shared_repo.exists()
+    assert StateManager(state_file).get_script("b.py") is None
+
+
+@REQUIRES_UV
+def test_cli_export_preserves_git_ref_metadata_and_import_dry_run_uses_it(tmp_path: Path) -> None:
+    """Export/import dry-run should preserve and use branch/tag/commit ref metadata."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    state_manager = StateManager(state_file)
+    state_manager.add_script(
+        ScriptInfo(
+            name="branch.py",
+            source_type=SourceType.GIT,
+            source_url="https://github.com/org/repo",
+            ref="main",
+            ref_type="branch",
+            installed_at=datetime.now(),
+            repo_path=repo_dir / "branch",
+            commit_hash="11111111",
+        )
+    )
+    state_manager.add_script(
+        ScriptInfo(
+            name="tag.py",
+            source_type=SourceType.GIT,
+            source_url="https://github.com/org/repo",
+            ref="v1.2.3",
+            ref_type="tag",
+            installed_at=datetime.now(),
+            repo_path=repo_dir / "tag",
+            commit_hash="22222222",
+        )
+    )
+    state_manager.add_script(
+        ScriptInfo(
+            name="commit.py",
+            source_type=SourceType.GIT,
+            source_url="https://github.com/org/repo",
+            ref="deadbeef",
+            ref_type="commit",
+            installed_at=datetime.now(),
+            repo_path=repo_dir / "commit",
+            commit_hash="deadbeef",
+        )
+    )
+
+    export_file = tmp_path / "git-export.json"
+    export_result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "export", "-o", str(export_file)],
+    )
+    assert export_result.exit_code == 0, export_result.output
+
+    exported = json.loads(export_file.read_text(encoding="utf-8"))
+    scripts_by_name = {item["name"]: item for item in exported["scripts"]}
+
+    assert scripts_by_name["branch.py"]["source"] == "https://github.com/org/repo"
+    assert scripts_by_name["branch.py"]["ref"] == "main"
+    assert scripts_by_name["branch.py"]["ref_type"] == "branch"
+
+    assert scripts_by_name["tag.py"]["ref"] == "v1.2.3"
+    assert scripts_by_name["tag.py"]["ref_type"] == "tag"
+
+    assert scripts_by_name["commit.py"]["ref"] == "deadbeef"
+    assert scripts_by_name["commit.py"]["ref_type"] == "commit"
+
+    dry_run_result = runner.invoke(
+        cli,
+        ["--config", str(config_path), "import", str(export_file), "--dry-run"],
+    )
+    assert dry_run_result.exit_code == 0, dry_run_result.output
+    assert "#main" in dry_run_result.output
+    assert "@v1.2.3" in dry_run_result.output
+    assert "@deadbeef" in dry_run_result.output
+
+
+@REQUIRES_UV
+@REQUIRES_UV_HELPER
+@pytest.mark.parametrize(
+    ("shell", "marker"),
+    [
+        ("bash", "_uv_helper_completion"),
+        ("zsh", "#compdef uv-helper"),
+        ("fish", "function _uv_helper_completion"),
+    ],
+)
+def test_cli_completion_outputs_non_empty_script(tmp_path: Path, shell: str, marker: str) -> None:
+    """Completion command should emit shell script content for all shells."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    result = runner.invoke(cli, ["--config", str(config_path), "completion", shell])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip()
+    assert marker in result.output
+
+
+@REQUIRES_UV
+def test_cli_install_force_reinstall_is_idempotent(tmp_path: Path) -> None:
+    """Repeated force installs should keep a single state entry for the script."""
+    runner = CliRunner()
+
+    repo_dir = tmp_path / "repos"
+    install_dir = tmp_path / "bin"
+    state_file = tmp_path / "state.json"
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, repo_dir, install_dir, state_file)
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "tool.py").write_text("print('hello')\n", encoding="utf-8")
+
+    first_install = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "install",
+            str(source_dir),
+            "--script",
+            "tool.py",
+            "--no-deps",
+        ],
+    )
+    assert first_install.exit_code == 0, first_install.output
+
+    second_install = runner.invoke(
+        cli,
+        [
+            "--config",
+            str(config_path),
+            "install",
+            str(source_dir),
+            "--script",
+            "tool.py",
+            "--no-deps",
+            "--force",
+        ],
+    )
+    assert second_install.exit_code == 0, second_install.output
+
+    scripts = StateManager(state_file).list_scripts()
+    assert len(scripts) == 1
+    assert scripts[0].name == "tool.py"
+    assert (install_dir / "tool.py").is_symlink()

@@ -134,8 +134,14 @@ def display_update_results(
             status_text = "[green]✓ Updated[/green]"
         elif status == "up-to-date":
             status_text = "[blue]✓ Up-to-date[/blue]"
-        else:
+        elif status == "skipped (local)":
+            status_text = "[dim]• skipped (local)[/dim]"
+        elif status.startswith("pinned to "):
+            status_text = f"[yellow]• {status}[/yellow]"
+        elif status.startswith("Error:"):
             status_text = f"[red]✗ {status}[/red]"
+        else:
+            status_text = f"[yellow]• {status}[/yellow]"
 
         table.add_row(script_name, status_text)
 
@@ -164,7 +170,7 @@ def display_script_details(script: ScriptInfo, console: Console) -> None:
     if script.source_type == SourceType.GIT:
         table.add_row("Source type:", "Git repository")
         table.add_row("Source URL:", f"[magenta]{script.source_url}[/magenta]")
-        table.add_row("Branch/Tag:", f"[green]{script.ref or 'default'}[/green]")
+        table.add_row("Ref:", f"[green]{script.ref or 'default'}[/green]")
         table.add_row("Commit:", f"[blue]{script.commit_hash or 'N/A'}[/blue]")
     else:
         table.add_row("Source type:", "Local directory")

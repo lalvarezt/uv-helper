@@ -199,6 +199,25 @@ def update_repository(repo_path: Path, ref: str | None = None) -> bool:
 
         if ref:
             checkout_ref(repo_path, ref)
+        elif is_detached_head(repo_path):
+            # Repository may have been previously checked out to tag/commit.
+            # For default updates, switch back to the remote default branch.
+            default_branch = get_default_branch(repo_path)
+            run_command(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    f"{default_branch}:refs/remotes/origin/{default_branch}",
+                ],
+                cwd=repo_path,
+                check=True,
+            )
+            run_command(
+                ["git", "checkout", "-B", default_branch, f"origin/{default_branch}"],
+                cwd=repo_path,
+                check=True,
+            )
 
         if is_detached_head(repo_path):
             # Tag or commit - don't pull
@@ -235,14 +254,32 @@ def get_default_branch(repo_path: Path) -> str:
         default_branch = result.stdout.strip().split("/")[-1]
         return default_branch
     except subprocess.CalledProcessError:
-        # Fall back to checking what branch we're on
+        # Fallback: ask remote what HEAD points to.
+        # Works even when local clone has detached HEAD from tag/commit checkout.
+        try:
+            result = run_command(
+                ["git", "ls-remote", "--symref", "origin", "HEAD"],
+                cwd=repo_path,
+                check=True,
+            )
+            for line in result.stdout.splitlines():
+                if line.startswith("ref: ") and line.endswith("\tHEAD"):
+                    # Format: ref: refs/heads/main	HEAD
+                    return line.split()[1].split("/")[-1]
+        except subprocess.CalledProcessError:
+            pass
+
+        # Last fallback: current branch (if not detached)
         try:
             result = run_command(
                 ["git", "branch", "--show-current"],
                 cwd=repo_path,
                 check=True,
             )
-            return result.stdout.strip()
+            branch = result.stdout.strip()
+            if branch:
+                return branch
+            raise GitError("Failed to determine default branch: repository is in detached HEAD state")
         except subprocess.CalledProcessError as e:
             raise GitError(f"Failed to determine default branch: {e.stderr}") from e
 

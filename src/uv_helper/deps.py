@@ -13,10 +13,13 @@ def parse_requirements_file(requirements_path: Path) -> list[str]:
     Handles:
     - `-r` includes (recursive)
     - `-e` editable installs
+    - URL/file requirements
     - Environment markers
     - Extras and version specifiers
 
-    Note: `-c` constraints and index options are not supported.
+    Notes:
+    - `-c` constraints and index options are ignored (not installable dependencies)
+    - Unnamed requirements (for example direct URLs) are preserved from the original line
 
     Args:
         requirements_path: Path to requirements.txt
@@ -31,11 +34,16 @@ def parse_requirements_file(requirements_path: Path) -> list[str]:
         raise FileNotFoundError(f"Requirements file not found: {requirements_path}")
 
     dependencies = []
+    ignored_prefixes = ("-c", "--constraint", "--index-url", "--extra-index-url", "--find-links")
 
     with open(requirements_path, encoding="utf-8") as f:
         for req in requirements.parse(f):
-            if req.name:
-                dependencies.append(req.line.strip())
+            line = req.line.strip()
+            if not line:
+                continue
+            if line.startswith(ignored_prefixes):
+                continue
+            dependencies.append(line)
 
     return dependencies
 

@@ -1,5 +1,7 @@
 """Migration #3: Add ref_type field to existing scripts."""
 
+import re
+
 from rich.console import Console
 from tinydb import TinyDB
 
@@ -13,14 +15,14 @@ def _infer_ref_type(ref: str | None) -> str:
     """Infer ref_type from ref value for existing scripts."""
     if not ref:
         return "default"
+    # Check for commit hash (7-40 hex characters)
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
+        return "commit"
     # Tags typically start with 'v' followed by a digit, or are purely numeric versions
     if ref.startswith("v") and len(ref) > 1 and ref[1].isdigit():
         return "tag"
     if ref[0].isdigit():
         return "tag"
-    # Check for commit hash (7-40 hex characters)
-    if len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref.lower()):
-        return "commit"
     # Default to branch
     return "branch"
 

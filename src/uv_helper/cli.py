@@ -620,6 +620,7 @@ def import_scripts(ctx: click.Context, file: Path, force: bool, dry_run: bool) -
         uv-helper import scripts.json --force
     """
     import json
+    import re
 
     from .constants import SourceType
 
@@ -646,9 +647,24 @@ def import_scripts(ctx: click.Context, file: Path, force: bool, dry_run: bool) -
             name = script_data.get("name", "unknown")
             source = script_data.get("source", "unknown")
             ref = script_data.get("ref", "")
+            stored_ref_type = script_data.get("ref_type")
             alias = script_data.get("alias")
 
-            ref_str = f"@{ref}" if ref else ""
+            if ref:
+                if stored_ref_type == "branch":
+                    ref_str = f"#{ref}"
+                elif stored_ref_type in ("tag", "commit"):
+                    ref_str = f"@{ref}"
+                else:
+                    # Fallback heuristic for older exports without ref_type
+                    if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
+                        ref_str = f"@{ref}"
+                    elif ref.startswith("v") or ref[0].isdigit():
+                        ref_str = f"@{ref}"
+                    else:
+                        ref_str = f"#{ref}"
+            else:
+                ref_str = ""
             alias_str = f" (as {alias})" if alias else ""
             console.print(f"  • {name}{alias_str} from {source}{ref_str}")
         return
@@ -680,7 +696,9 @@ def import_scripts(ctx: click.Context, file: Path, force: bool, dry_run: bool) -
                 source = f"{source}@{ref}"
             else:
                 # Fallback heuristic for older exports without ref_type
-                if ref.startswith("v") or ref[0].isdigit():
+                if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
+                    source = f"{source}@{ref}"
+                elif ref.startswith("v") or ref[0].isdigit():
                     source = f"{source}@{ref}"
                 else:
                     source = f"{source}#{ref}"

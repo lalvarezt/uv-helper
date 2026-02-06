@@ -14,8 +14,8 @@ manage Python scripts directly from Git repositories that don't have proper pack
 
 ### The Problem
 
-Many useful Python scripts exist in Git repositories without `setup.py` or `pyproject.toml` files. Currently, uv cannot
-directly install these scripts. Users must:
+Many useful Python scripts exist in Git repositories without `setup.py` or `pyproject.toml` files. Currently, `uv`
+cannot directly install these scripts. Users must:
 
 - Clone repositories manually
 - Navigate directories
@@ -32,7 +32,7 @@ UV-Helper automates this entire workflow:
 # Install a script directly from any Git repository
 uv-helper install https://github.com/user/repo --script script.py
 
-# That's it! The script is now available in your PATH
+# That's it! The script is now available in your `PATH`
 script.py --help
 ```
 
@@ -43,13 +43,14 @@ command
 - **Local Directory Support**: Install scripts from local directories on your filesystem
 - **Script Aliasing**: Install scripts with custom names using the `--alias` flag
 - **Git Refs Support**: Install from specific branches, tags, or commits (pinned refs are preserved during updates)
-- **Dependency Management**: Full requirements.txt support including `-r` includes, extras, and version specifiers
+- **Dependency Management**: `requirements.txt` support including `-r` includes, `-e` editable installs, direct URL
+  requirements, extras, and version specifiers
 - **Local Package Dependencies**: Add local packages as dependencies with automatic path management
 - **Idempotent Operations**: Re-running installs updates instead of failing
 - **State Tracking**: Keep track of all installed scripts
 - **Export/Import**: Backup and restore script installations
 - **Browse Repositories**: List available scripts in a repository before installing
-- **Shell Completion**: Tab completion for bash, zsh, and fish
+- **Shell Completion**: Tab completion for `bash`, `zsh`, and `fish`
 - **Rich CLI**: Beautiful terminal output with progress bars and tables
 - **Configuration**: Customize behavior via TOML config files
 - **Update Management**: Update individual scripts or all at once
@@ -57,7 +58,7 @@ command
 
 ## Installation
 
-### Using uv (Recommended)
+### Using `uv` (Recommended)
 
 ```bash
 uv tool install uv-helper
@@ -74,9 +75,9 @@ uv pip install -e .
 ### Prerequisites
 
 - Python 3.11 or higher
-- [uv](https://github.com/astral-sh/uv) installed and in PATH
-- [git](https://git-scm.com/) installed and in PATH when working with Git sources (local-only
-  operations do not require git)
+- [uv](https://github.com/astral-sh/uv) installed and in `PATH`
+- [git](https://git-scm.com/) installed and in `PATH` when working with Git sources (local-only operations do not require
+`git`)
 
 ## Quick Start
 
@@ -107,28 +108,30 @@ uv-helper remove script.py
 
 ### `install`
 
-Install Python scripts from a Git repository.
+Install Python scripts from a Git repository or local directory.
 
 ```bash
-uv-helper install <git-url> --script <script.py> [--script <more.py> ...] [OPTIONS]
+uv-helper install <source> --script <script.py> [--script <more.py> ...] [OPTIONS]
 ```
 
 **Arguments:**
 
-- `source`: Git repository URL or local directory path (Git URLs support `@tag`, `#branch` suffixes)
+- `source`: Git repository URL or local directory path (Git URLs support `@tag`, `@commit`, `#branch` suffixes)
 
 **Options:**
 
-- `--script TEXT`: Script names to install (can be repeated)
+- `-s, --script TEXT`: Script names to install (can be repeated)
 - `--alias TEXT`: Custom name for the installed script (only for single script installations)
-- `--with TEXT`: Dependencies (`requirements.txt` path or comma-separated list, appends to existing dependencies)
-- `--force`: Force overwrite without confirmation
+- `-w, --with TEXT`: Dependencies (`requirements.txt` path or comma-separated list, appends to existing dependencies)
+- `-f, --force`: Force overwrite without confirmation
 - `--no-symlink`: Skip creating symlinks
 - `--no-deps`: Skip dependency resolution entirely
 - `--install-dir PATH`: Custom installation directory
+- `-v, --verbose`: Show dependency resolution details
 - `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 - `--copy-parent-dir`: For local sources, copy entire parent directory instead of just the script
-- `--add-source-package TEXT`: Add source as a local package dependency (optionally specify package name)
+- `--add-source-package TEXT`: Add source as a local package dependency (optionally specify package name; for local
+sources this requires `--copy-parent-dir`)
 
 **Examples:**
 
@@ -182,6 +185,25 @@ uv-helper list --verbose
 uv-helper list --tree
 ```
 
+### `show`
+
+Show detailed information about an installed script.
+
+```bash
+uv-helper show <script-name>
+```
+
+**Arguments:**
+
+- `script-name`: Name of the script to show (can be original name or alias)
+
+**Examples:**
+
+```bash
+uv-helper show script.py
+uv-helper show short  # Show by alias
+```
+
 ### `remove`
 
 Remove an installed script.
@@ -196,8 +218,8 @@ uv-helper remove <script-name> [OPTIONS]
 
 **Options:**
 
-- `--clean-repo`: Remove cloned repository if no other scripts use it
-- `--force`: Skip confirmation prompt
+- `-c, --clean-repo`: Remove cloned repository if no other scripts use it
+- `-f, --force`: Skip confirmation prompt
 
 During removal the CLI reports the original source: Git installs show the repository URL, while
 local installs show the stored source directory.
@@ -224,12 +246,12 @@ uv-helper update <script-name> [OPTIONS]
 
 **Options:**
 
-- `--force`: Force reinstall even if up-to-date
-- `--refresh-deps`: Re-resolve dependencies from the repository's requirements.txt
+- `-f, --force`: Force reinstall even if up-to-date
+- `--refresh-deps`: Re-resolve dependencies from the repository's `requirements.txt`
 - `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 
 Aliases are automatically preserved when updating scripts. Scripts installed from tags or commits are treated as pinned
-and will not be updated unless `--force` is used.
+and will not move to a different ref unless `--force` is used.
 
 **Examples:**
 
@@ -249,13 +271,13 @@ uv-helper update-all [OPTIONS]
 
 **Options:**
 
-- `--force`: Force reinstall all scripts
-- `--refresh-deps`: Re-resolve dependencies from each repository's requirements.txt
+- `-f, --force`: Force reinstall all scripts
+- `--refresh-deps`: Re-resolve dependencies from each repository's `requirements.txt`
 - `--exact/--no-exact`: Use `--exact` flag in shebang for precise dependency management (default: from config)
 
 Local installations are skipped automatically (reported as `skipped (local)`) because UV-Helper
 needs access to the original source directory to refresh them. Scripts installed from tags or commits are treated as
-pinned and reported as `pinned`.
+pinned and reported as `pinned to <ref>` when running without `--force` or `--refresh-deps`.
 
 **Examples:**
 
@@ -275,8 +297,8 @@ uv-helper doctor [OPTIONS]
 
 - `--repair`: Automatically repair state issues
 
-Displays configuration paths, verifies system dependencies (Git, uv), and validates the state database. Use `--repair`
-to automatically fix common issues like missing directories or corrupted state.
+Displays configuration paths, verifies system dependencies (`git`, `uv`), and validates the state database. Use
+`--repair` to automatically fix common issues like missing directories or corrupted state.
 
 **Examples:**
 
@@ -293,16 +315,16 @@ uv-helper doctor --repair
 List available scripts in a repository before installing.
 
 ```bash
-uv-helper browse <source> [OPTIONS]
+uv-helper browse <git-url> [OPTIONS]
 ```
 
 **Arguments:**
 
-- `source`: Git repository URL (supports `@tag`, `#branch` suffixes)
+- `git-url`: Git repository URL (supports `@tag`, `@commit`, `#branch` suffixes)
 
 **Options:**
 
-- `--all`, `-a`: Show all Python files including typically excluded ones (tests, `__init__.py`, etc.)
+- `--all`: Show all Python files including typically excluded ones (tests, `__init__.py`, etc.)
 
 For GitHub repositories, uses the GitHub API for fast listing without cloning. For other repositories, clones to a
 cached directory.
@@ -357,7 +379,7 @@ uv-helper import <file> [OPTIONS]
 **Options:**
 
 - `--dry-run`: Preview what would be installed without making changes
-- `--force`: Force overwrite existing scripts
+- `-f, --force`: Force overwrite existing scripts
 
 **Examples:**
 
@@ -393,11 +415,12 @@ commands like `show`, `remove`, and `update`.
 # Fish shell
 uv-helper completion fish > ~/.config/fish/completions/uv-helper.fish
 
-# Bash (add to ~/.bashrc)
-uv-helper completion bash >> ~/.bashrc
+# Bash
+uv-helper completion bash > ~/.local/share/bash-completion/completions/uv-helper
 
-# Zsh (add to ~/.zshrc)
-uv-helper completion zsh >> ~/.zshrc
+# Zsh
+uv-helper completion zsh > ~/.zfunc/_uv-helper
+# Then add: fpath+=~/.zfunc && autoload -Uz compinit && compinit
 ```
 
 ## Configuration
@@ -450,11 +473,12 @@ uv-helper install ...
 
 ### Configuration Priority
 
-1. Command-line flags (highest priority)
-2. Environment variables
-3. Custom config file (via `--config`)
-4. Default config file (`~/.config/uv-helper/config.toml`)
-5. Built-in defaults (lowest priority)
+1. `--config` CLI option (selects the config file explicitly)
+2. `UV_HELPER_CONFIG` environment variable (when `--config` is not provided)
+3. Default config path (`~/.config/uv-helper/config.toml`)
+4. Built-in defaults for missing config values
+
+At runtime, command options such as `--install-dir` and `--exact/--no-exact` override config values for that command.
 
 ## How It Works
 
@@ -480,7 +504,7 @@ UV-Helper automates the following workflow:
 
 ### Shebang Transformation
 
-UV-Helper modifies script shebangs to use uv's script runner with the `--exact` flag:
+UV-Helper modifies script shebangs to use `uv`'s script runner with the `--exact` flag:
 
 ```python
 #!/usr/bin/env -S uv run --exact --script
@@ -501,11 +525,8 @@ This behavior can be controlled via the `use_exact_flag` configuration option or
 git clone https://github.com/lalvarezt/uv-helper
 cd uv-helper
 
-# Install with dev dependencies
-uv tool install -e ".[dev]"
-
-# Setup local virtual environment
-uv sync
+# Setup local virtual environment with dev dependencies
+uv sync --group dev
 ```
 
 ### Run Tests
@@ -547,4 +568,4 @@ Contributions are welcome! Please:
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License - see `LICENSE` file for details.

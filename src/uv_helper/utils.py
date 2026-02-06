@@ -51,12 +51,16 @@ def is_git_url(url: str) -> bool:
     Returns:
         True if valid Git URL, False otherwise
     """
-    # Remove ref markers before validation
+    # Remove optional UV-Helper ref suffixes before validation.
+    # We only treat '@' as a ref delimiter when it appears in the path suffix,
+    # not when it is part of SSH user info (e.g., ssh://git@github.com/...).
     base_url = url
-    if "@" in url and not url.startswith("git@"):
-        base_url = url.rsplit("@", 1)[0]
-    elif "#" in url:
+    if "#" in url:
         base_url = url.rsplit("#", 1)[0]
+    else:
+        at_index = url.rfind("@")
+        if at_index != -1 and at_index > max(url.rfind("/"), url.rfind(":")):
+            base_url = url[:at_index]
 
     return validate_git_url(base_url)
 

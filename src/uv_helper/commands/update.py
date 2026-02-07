@@ -12,8 +12,10 @@ from ..git_manager import (
     clone_or_update,
     get_current_commit_hash,
     get_default_branch,
+    get_remote_commit_hash,
     verify_git_available,
 )
+from ..local_changes import clear_managed_script_changes, get_local_change_state
 from ..script_installer import InstallConfig, ScriptInstallerError, install_script
 from ..state import ScriptInfo, StateManager
 from ..utils import copy_directory_contents, handle_git_error, progress_spinner
@@ -64,8 +66,12 @@ class UpdateHandler:
             return self._update_git_script(script_info, display_name, force, exact, refresh_deps)
 
     def update_all(
-        self, force: bool, exact: bool | None, refresh_deps: bool = False
-    ) -> list[tuple[str, str]]:
+        self,
+        force: bool,
+        exact: bool | None,
+        refresh_deps: bool = False,
+        dry_run: bool = False,
+    ) -> list[tuple[str, str] | tuple[str, str, str]]:
         """
         Update all installed scripts.
 
@@ -73,6 +79,7 @@ class UpdateHandler:
             force: Force reinstall all scripts
             exact: Use --exact flag in shebang
             refresh_deps: Re-resolve dependencies from repository
+            dry_run: Show what would be updated without applying changes
 
         Returns:
             List of (script_name, status) tuples
@@ -83,7 +90,10 @@ class UpdateHandler:
             self.console.print("No scripts installed.")
             return []
 
-        self.console.print(f"Updating {len(scripts)} script(s)...")
+        if dry_run:
+            self.console.print(f"Checking {len(scripts)} script(s) for updates...")
+        else:
+            self.console.print(f"Updating {len(scripts)} script(s)...")
 
         results = []
         git_checked = False
@@ -93,7 +103,10 @@ class UpdateHandler:
 
             # Skip local scripts (they need manual source updates)
             if script_info.source_type == SourceType.LOCAL:
-                results.append((display_name, "skipped (local)"))
+                if dry_run:
+                    results.append((display_name, "skipped (local)", "N/A"))
+                else:
+                    results.append((display_name, "skipped (local)"))
                 continue
 
             # Verify git available once
@@ -102,10 +115,24 @@ class UpdateHandler:
                 git_checked = True
 
             try:
-                status = self._update_git_script_internal(script_info, force, exact, refresh_deps)
-                results.append((display_name, status))
+                if dry_run:
+                    local_change_state = get_local_change_state(script_info.repo_path, script_info.name)
+                    status = self._check_git_script_update_status(
+                        script_info,
+                        force,
+                        refresh_deps,
+                        local_change_state,
+                    )
+                    local_changes = self._format_local_changes_label(local_change_state)
+                    results.append((display_name, status, local_changes))
+                else:
+                    status = self._update_git_script_internal(script_info, force, exact, refresh_deps)
+                    results.append((display_name, status))
             except (GitError, ScriptInstallerError) as e:
-                results.append((display_name, f"Error: {e}"))
+                if dry_run:
+                    results.append((display_name, f"Error: {e}", "Unknown"))
+                else:
+                    results.append((display_name, f"Error: {e}"))
 
         return results
 
@@ -213,6 +240,21 @@ class UpdateHandler:
             # Pinned refs don't get updates - they're intentionally fixed
             return f"pinned to {script_info.ref}"
 
+        if not is_pinned and not force and not refresh_deps:
+            remote_commit_hash = get_remote_commit_hash(script_info.source_url, script_info.ref)
+            if remote_commit_hash == script_info.commit_hash:
+                return "up-to-date"
+
+        local_change_state = get_local_change_state(script_info.repo_path, script_info.name)
+        if local_change_state == "blocking":
+            raise GitError(
+                "Repository has custom local changes. Commit, stash, or discard them before updating."
+            )
+        if local_change_state == "managed":
+            cleaned = clear_managed_script_changes(script_info.repo_path, script_info.name)
+            if not cleaned:
+                raise GitError("Failed to clear uv-managed local script changes before update")
+
         with progress_spinner("Updating repository...", self.console):
             clone_or_update(
                 script_info.source_url,
@@ -280,3 +322,47 @@ class UpdateHandler:
         self.state_manager.add_script(script_info)
 
         return "updated"
+
+    def _check_git_script_update_status(
+        self,
+        script_info: ScriptInfo,
+        force: bool,
+        refresh_deps: bool,
+        local_change_state: str | None = None,
+    ) -> str:
+        """Check update status for a Git script without mutating local state."""
+        assert script_info.source_url is not None
+        assert script_info.ref is not None
+
+        is_pinned = script_info.ref_type in ("tag", "commit")
+
+        if is_pinned and not force and not refresh_deps:
+            return f"pinned to {script_info.ref}"
+
+        if force or refresh_deps:
+            status = "would update"
+        else:
+            remote_commit_hash = get_remote_commit_hash(script_info.source_url, script_info.ref)
+            if remote_commit_hash == script_info.commit_hash:
+                status = "up-to-date"
+            else:
+                status = "would update"
+
+        if status == "would update":
+            if local_change_state is None:
+                local_change_state = get_local_change_state(script_info.repo_path, script_info.name)
+            if local_change_state == "blocking":
+                return "would update (local custom changes present)"
+
+        return status
+
+    @staticmethod
+    def _format_local_changes_label(local_change_state: str) -> str:
+        """Format local change state for update table display."""
+        if local_change_state == "blocking":
+            return "Yes"
+        if local_change_state == "managed":
+            return "No (managed)"
+        if local_change_state == "clean":
+            return "No"
+        return "Unknown"
